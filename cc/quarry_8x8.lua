@@ -15,14 +15,14 @@ local dir = 0 -- 0=north, 1=east, 2=south, 3=west
 local lastDownWasSolid = false
 
 -- Modem / rednet (optional) -------------------------------------------------
+-- peripheral.find() uses peripheral.hasType() internally, which works
+-- correctly in all CC:Tweaked versions (including 1.99+ where a peripheral
+-- can expose multiple types). peripheral.getName() then gives us the side
+-- string that rednet.open() requires.
 local modemSide = nil
-for _, side in ipairs({"top", "bottom", "left", "right", "front", "back"}) do
-    if peripheral.getType(side) == "modem" then
-        modemSide = side
-        break
-    end
-end
-if modemSide then
+local _modem = peripheral.find("modem")
+if _modem then
+    modemSide = peripheral.getName(_modem)
     rednet.open(modemSide)
 end
 

@@ -6,16 +6,14 @@
 local PROTOCOL = "quarry"
 
 -- Find and open modem -------------------------------------------------------
+-- peripheral.find() / peripheral.getName() is the reliable modern
+-- CC:Tweaked pattern; it handles multi-type peripherals correctly.
 local modemSide = nil
-for _, side in ipairs({"top", "bottom", "left", "right", "front", "back"}) do
-    if peripheral.getType(side) == "modem" then
-        modemSide = side
-        break
-    end
-end
-if not modemSide then
+local _modem = peripheral.find("modem")
+if not _modem then
     error("No modem found. Attach a modem to this computer.", 0)
 end
+modemSide = peripheral.getName(_modem)
 rednet.open(modemSide)
 
 -- Find monitor --------------------------------------------------------------
