@@ -6,14 +6,25 @@
 local PROTOCOL = "quarry"
 
 -- Find and open modem -------------------------------------------------------
--- peripheral.find() / peripheral.getName() is the reliable modern
--- CC:Tweaked pattern; it handles multi-type peripherals correctly.
+-- Collect all attached modems and prefer a wireless one; rednet broadcasts
+-- only travel between wireless modems, so using a wired modem would prevent
+-- communication with the turtle.
 local modemSide = nil
-local _modem = peripheral.find("modem")
-if not _modem then
+do
+    local modems = {peripheral.find("modem")}
+    for _, m in ipairs(modems) do
+        if m.isWireless and m.isWireless() then
+            modemSide = peripheral.getName(m)
+            break
+        end
+    end
+    if not modemSide and #modems > 0 then
+        modemSide = peripheral.getName(modems[1])
+    end
+end
+if not modemSide then
     error("No modem found. Attach a modem to this computer.", 0)
 end
-modemSide = peripheral.getName(_modem)
 rednet.open(modemSide)
 
 -- Find monitor --------------------------------------------------------------

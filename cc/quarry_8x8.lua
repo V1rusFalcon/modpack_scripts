@@ -15,14 +15,24 @@ local dir = 0 -- 0=north, 1=east, 2=south, 3=west
 local lastDownWasSolid = false
 
 -- Modem / rednet (optional) -------------------------------------------------
--- peripheral.find() uses peripheral.hasType() internally, which works
--- correctly in all CC:Tweaked versions (including 1.99+ where a peripheral
--- can expose multiple types). peripheral.getName() then gives us the side
--- string that rednet.open() requires.
+-- Collect all attached modems and prefer a wireless one; rednet broadcasts
+-- only travel between wireless modems, so a wired modem would prevent the
+-- monitor from receiving messages.
 local modemSide = nil
-local _modem = peripheral.find("modem")
-if _modem then
-    modemSide = peripheral.getName(_modem)
+do
+    local modems = {peripheral.find("modem")}
+    for _, m in ipairs(modems) do
+        if m.isWireless and m.isWireless() then
+            modemSide = peripheral.getName(m)
+            break
+        end
+    end
+    -- Fall back to any modem if no wireless one is present.
+    if not modemSide and #modems > 0 then
+        modemSide = peripheral.getName(modems[1])
+    end
+end
+if modemSide then
     rednet.open(modemSide)
 end
 
