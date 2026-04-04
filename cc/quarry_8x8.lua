@@ -1,11 +1,15 @@
--- ComputerCraft: 15x15 quarry to bedrock with auto-unload at base chest.
+-- ComputerCraft: 8x8 quarry to bedrock with auto-unload at base chest.
 -- Place the turtle at one corner of the quarry, facing forward along the first row.
 -- Place a chest directly behind the turtle's starting position.
 
-local SIZE = 15
+local SIZE = 8
 
 local x, y, z = 0, 0, 0
 local dir = 0 -- 0=north, 1=east, 2=south, 3=west
+
+-- Set to true by down() when it dug through a solid block to descend.
+-- Used after goTo() to detect whether we arrived at solid rock or cave air.
+local lastDownWasSolid = false
 
 local function isBedrock(block)
     return block and type(block.name) == "string" and string.find(block.name, "bedrock", 1, true) ~= nil
@@ -87,6 +91,11 @@ local function forward()
 end
 
 local function down()
+    -- Capture whether there is a solid block below *before* we dig it away.
+    -- The flag is only committed to lastDownWasSolid after a successful descent
+    -- so callers always see the state that corresponds to an actual move.
+    local wasSolid = turtle.detectDown()
+
     local ok, reason = digDownSafe()
     if not ok then
         return false, reason
@@ -101,6 +110,7 @@ local function down()
     end
 
     y = y - 1
+    lastDownWasSolid = wasSolid  -- set only after the turtle actually descended
     return true
 end
 
@@ -255,39 +265,77 @@ local function mineLayer(size)
     return true
 end
 
-print("Starting 15x15 quarry. Chest must be behind the starting position.")
+local function runQuarry()
+    local layer = 1
 
-local layer = 1
-while true do
-    print("Mining layer " .. layer)
+    while true do
+        print("Mining layer " .. layer)
 
-    local ok, reason = mineLayer(SIZE)
+        local ok, reason = mineLayer(SIZE)
+        local lastY = y  -- save depth before going home; mineLayer only moves horizontally
 
-    local okUnload, unloadReason = unloadAtHomeChest()
-    if not okUnload then
-        print("Stopped while unloading: " .. tostring(unloadReason))
-        break
+        local okUnload, unloadReason = unloadAtHomeChest()
+        if not okUnload then
+            print("Stopped while unloading: " .. tostring(unloadReason))
+            return
+        end
+
+        if not ok and reason == "bedrock" then
+            print("Bedrock encountered while mining. Quarry complete.")
+            return
+        elseif not ok then
+            print("Stopped while mining: " .. tostring(reason))
+            return
+        end
+
+        -- Descend to exactly one block below the layer we just mined.
+        -- goTo() calls down() for each step; after it returns, lastDownWasSolid
+        -- reflects whether the final step dug through solid rock (true) or
+        -- passed through existing air/cave (false).
+        local okGo, goReason = goTo(0, lastY - 1, 0)
+        if not okGo then
+            if goReason == "bedrock" then
+                print("Reached bedrock. Quarry complete.")
+            else
+                print("Stopped descending: " .. tostring(goReason))
+            end
+            return
+        end
+
+        -- If the last step was through air we are inside a cave.
+        -- Keep descending until the floor is solid, then step into it.
+        if not lastDownWasSolid then
+            -- Drop through cave air until there is a solid block directly below.
+            while not turtle.detectDown() do
+                local okD, dReason = down()
+                if not okD then
+                    if dReason == "bedrock" then
+                        print("Reached bedrock. Quarry complete.")
+                    else
+                        print("Stopped descending through cave: " .. tostring(dReason))
+                    end
+                    return
+                end
+            end
+            -- detectDown() is now true: solid block is one step below.
+            -- Descend into it so the next mineLayer works on solid rock.
+            local okD, dReason = down()
+            if not okD then
+                if dReason == "bedrock" then
+                    print("Reached bedrock. Quarry complete.")
+                else
+                    print("Stopped entering solid layer: " .. tostring(dReason))
+                end
+                return
+            end
+        end
+
+        layer = layer + 1
     end
-
-    if not ok and reason == "bedrock" then
-        print("Bedrock encountered while mining. Quarry complete.")
-        break
-    elseif not ok then
-        print("Stopped while mining: " .. tostring(reason))
-        break
-    end
-
-    local okDown, downReason = down()
-    if not okDown and downReason == "bedrock" then
-        print("Reached bedrock below base. Quarry complete.")
-        break
-    elseif not okDown then
-        print("Stopped while descending: " .. tostring(downReason))
-        break
-    end
-
-    layer = layer + 1
 end
+
+print("Starting 8x8 quarry. Chest must be behind the starting position.")
+runQuarry()
 
 local okHome, reasonHome = goHome()
 if not okHome then
