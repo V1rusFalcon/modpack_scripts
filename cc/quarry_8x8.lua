@@ -138,12 +138,13 @@ local function down()
 end
 
 local function isInventoryFull()
+    local used = 0
     for slot = 1, 16 do
-        if turtle.getItemCount(slot) == 0 then
-            return false
+        if turtle.getItemCount(slot) > 0 then
+            used = used + 1
         end
     end
-    return true
+    return used > 16 * 0.6  -- unload when more than 60% of slots are occupied
 end
 
 local function dropAll()
