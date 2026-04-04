@@ -1,8 +1,11 @@
 -- ComputerCraft: 8x8 quarry to bedrock with auto-unload at base chest.
 -- Place the turtle at one corner of the quarry, facing forward along the first row.
 -- Place a chest directly behind the turtle's starting position.
+-- Optional: attach a modem to broadcast status; run quarry_monitor.lua on a
+-- separate computer with a monitor to display live output.
 
 local SIZE = 8
+local PROTOCOL = "quarry"
 
 local x, y, z = 0, 0, 0
 local dir = 0 -- 0=north, 1=east, 2=south, 3=west
@@ -10,6 +13,26 @@ local dir = 0 -- 0=north, 1=east, 2=south, 3=west
 -- Set to true by down() when it dug through a solid block to descend.
 -- Used after goTo() to detect whether we arrived at solid rock or cave air.
 local lastDownWasSolid = false
+
+-- Modem / rednet (optional) -------------------------------------------------
+local modemSide = nil
+for _, side in ipairs({"top", "bottom", "left", "right", "front", "back"}) do
+    if peripheral.getType(side) == "modem" then
+        modemSide = side
+        break
+    end
+end
+if modemSide then
+    rednet.open(modemSide)
+end
+
+local function log(msg)
+    print(msg)
+    if modemSide then
+        rednet.broadcast(msg, PROTOCOL)
+    end
+end
+-- ---------------------------------------------------------------------------
 
 local function isBedrock(block)
     return block and type(block.name) == "string" and string.find(block.name, "bedrock", 1, true) ~= nil
@@ -269,22 +292,22 @@ local function runQuarry()
     local layer = 1
 
     while true do
-        print("Mining layer " .. layer)
+        log("Mining layer " .. layer)
 
         local ok, reason = mineLayer(SIZE)
         local lastY = y  -- save depth before going home; mineLayer only moves horizontally
 
         local okUnload, unloadReason = unloadAtHomeChest()
         if not okUnload then
-            print("Stopped while unloading: " .. tostring(unloadReason))
+            log("Stopped while unloading: " .. tostring(unloadReason))
             return
         end
 
         if not ok and reason == "bedrock" then
-            print("Bedrock encountered while mining. Quarry complete.")
+            log("Bedrock encountered while mining. Quarry complete.")
             return
         elseif not ok then
-            print("Stopped while mining: " .. tostring(reason))
+            log("Stopped while mining: " .. tostring(reason))
             return
         end
 
@@ -295,9 +318,9 @@ local function runQuarry()
         local okGo, goReason = goTo(0, lastY - 1, 0)
         if not okGo then
             if goReason == "bedrock" then
-                print("Reached bedrock. Quarry complete.")
+                log("Reached bedrock. Quarry complete.")
             else
-                print("Stopped descending: " .. tostring(goReason))
+                log("Stopped descending: " .. tostring(goReason))
             end
             return
         end
@@ -310,9 +333,9 @@ local function runQuarry()
                 local okD, dReason = down()
                 if not okD then
                     if dReason == "bedrock" then
-                        print("Reached bedrock. Quarry complete.")
+                        log("Reached bedrock. Quarry complete.")
                     else
-                        print("Stopped descending through cave: " .. tostring(dReason))
+                        log("Stopped descending through cave: " .. tostring(dReason))
                     end
                     return
                 end
@@ -322,9 +345,9 @@ local function runQuarry()
             local okD, dReason = down()
             if not okD then
                 if dReason == "bedrock" then
-                    print("Reached bedrock. Quarry complete.")
+                    log("Reached bedrock. Quarry complete.")
                 else
-                    print("Stopped entering solid layer: " .. tostring(dReason))
+                    log("Stopped entering solid layer: " .. tostring(dReason))
                 end
                 return
             end
@@ -334,12 +357,18 @@ local function runQuarry()
     end
 end
 
-print("Starting 8x8 quarry. Chest must be behind the starting position.")
+if modemSide then
+    log("Rednet open on " .. modemSide .. " (protocol: " .. PROTOCOL .. ")")
+end
+log("Starting 8x8 quarry. Chest must be behind the starting position.")
 runQuarry()
 
 local okHome, reasonHome = goHome()
 if not okHome then
-    print("Warning: could not return home: " .. tostring(reasonHome))
+    log("Warning: could not return home: " .. tostring(reasonHome))
 end
 
-print("Done.")
+log("Done.")
+if modemSide then
+    rednet.close(modemSide)
+end
