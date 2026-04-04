@@ -14,6 +14,10 @@ local dir = 0 -- 0=north, 1=east, 2=south, 3=west
 -- Used after goTo() to detect whether we arrived at solid rock or cave air.
 local lastDownWasSolid = false
 
+-- Running totals for debug output.
+local totalBlocksMined = 0
+local layerBlocksMined = 0
+
 -- Modem / rednet (optional) -------------------------------------------------
 -- Collect all attached modems and prefer a wireless one; rednet broadcasts
 -- only travel between wireless modems, so a wired modem would prevent the
@@ -79,6 +83,8 @@ local function digForwardSafe()
 
         turtle.dig()
         turtle.attack()
+        totalBlocksMined = totalBlocksMined + 1
+        layerBlocksMined = layerBlocksMined + 1
     end
     return true
 end
@@ -92,6 +98,8 @@ local function digDownSafe()
 
         turtle.digDown()
         turtle.attackDown()
+        totalBlocksMined = totalBlocksMined + 1
+        layerBlocksMined = layerBlocksMined + 1
     end
     return true
 end
@@ -147,14 +155,18 @@ local function down()
     return true
 end
 
-local function isInventoryFull()
+local function usedSlots()
     local used = 0
     for slot = 1, 16 do
         if turtle.getItemCount(slot) > 0 then
             used = used + 1
         end
     end
-    return used > 16 * 0.6  -- unload when more than 60% of slots are occupied
+    return used
+end
+
+local function isInventoryFull()
+    return usedSlots() > 16 * 0.6  -- unload when more than 60% of slots are occupied
 end
 
 local function dropAll()
@@ -246,11 +258,13 @@ local function unloadAtHomeChest()
 end
 
 local function unloadAndReturn(workX, workY, workZ, workDir)
+    log(string.format("  Inventory %d/16 slots used — unloading at chest.", usedSlots()))
     local ok, reason = unloadAtHomeChest()
     if not ok then
         return false, reason
     end
 
+    log(string.format("  Returning to pos (%d,%d,%d).", workX, workY, workZ))
     local ok2, reason2 = goTo(workX, workY, workZ)
     if not ok2 then
         return false, reason2
@@ -303,10 +317,17 @@ local function runQuarry()
     local layer = 1
 
     while true do
-        log("Mining layer " .. layer)
+        layerBlocksMined = 0
+        log(string.format("Layer %d | depth y=%d | fuel=%s | total mined=%d",
+            layer, y,
+            tostring(turtle.getFuelLevel()),
+            totalBlocksMined))
 
         local ok, reason = mineLayer(SIZE)
         local lastY = y  -- save depth before going home; mineLayer only moves horizontally
+
+        log(string.format("  Layer %d done: %d blocks mined (total %d).",
+            layer, layerBlocksMined, totalBlocksMined))
 
         local okUnload, unloadReason = unloadAtHomeChest()
         if not okUnload then
@@ -326,6 +347,7 @@ local function runQuarry()
         -- goTo() calls down() for each step; after it returns, lastDownWasSolid
         -- reflects whether the final step dug through solid rock (true) or
         -- passed through existing air/cave (false).
+        log(string.format("  Descending to y=%d.", lastY - 1))
         local okGo, goReason = goTo(0, lastY - 1, 0)
         if not okGo then
             if goReason == "bedrock" then
@@ -339,6 +361,8 @@ local function runQuarry()
         -- If the last step was through air we are inside a cave.
         -- Keep descending until the floor is solid, then step into it.
         if not lastDownWasSolid then
+            log(string.format("  Cave detected at y=%d — dropping to floor.", y))
+            local caveTop = y
             -- Drop through cave air until there is a solid block directly below.
             while not turtle.detectDown() do
                 local okD, dReason = down()
@@ -351,6 +375,7 @@ local function runQuarry()
                     return
                 end
             end
+            log(string.format("  Cave floor at y=%d (skipped %d air blocks).", y, caveTop - y))
             -- detectDown() is now true: solid block is one step below.
             -- Descend into it so the next mineLayer works on solid rock.
             local okD, dReason = down()
@@ -364,6 +389,8 @@ local function runQuarry()
             end
         end
 
+        log(string.format("  Starting next layer at y=%d | fuel=%s",
+            y, tostring(turtle.getFuelLevel())))
         layer = layer + 1
     end
 end
@@ -371,7 +398,8 @@ end
 if modemSide then
     log("Rednet open on " .. modemSide .. " (protocol: " .. PROTOCOL .. ")")
 end
-log("Starting 8x8 quarry. Chest must be behind the starting position.")
+log(string.format("Starting 8x8 quarry. Fuel=%s. Chest must be behind the starting position.",
+    tostring(turtle.getFuelLevel())))
 runQuarry()
 
 local okHome, reasonHome = goHome()
