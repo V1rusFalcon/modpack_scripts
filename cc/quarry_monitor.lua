@@ -9,23 +9,34 @@ local PROTOCOL = "quarry"
 -- Collect all attached modems and prefer a wireless one; rednet broadcasts
 -- only travel between wireless modems, so using a wired modem would prevent
 -- communication with the turtle.
+print("[DBG] Scanning for modems...")
+local allPeripherals = peripheral.getNames()
+print("[DBG] All peripherals: " .. table.concat(allPeripherals, ", "))
+
 local modemSide = nil
 do
     local modems = {peripheral.find("modem")}
+    print("[DBG] Modems found: " .. tostring(#modems))
     for _, m in ipairs(modems) do
-        if m.isWireless and m.isWireless() then
-            modemSide = peripheral.getName(m)
-            break
+        local side = peripheral.getName(m)
+        local isWL = m.isWireless and m.isWireless()
+        print("[DBG] Modem on '" .. side .. "' wireless=" .. tostring(isWL))
+        if isWL and not modemSide then
+            modemSide = side
         end
     end
     if not modemSide and #modems > 0 then
         modemSide = peripheral.getName(modems[1])
+        print("[DBG] No wireless modem; falling back to '" .. modemSide .. "'")
     end
 end
 if not modemSide then
+    print("[DBG] ERROR: No modem found. Attach a modem to this computer.")
     error("No modem found. Attach a modem to this computer.", 0)
 end
 rednet.open(modemSide)
+print("[DBG] Rednet opened on '" .. modemSide .. "', monitor ID=" .. tostring(os.getComputerID()))
+print("[DBG] Listening for protocol: " .. PROTOCOL)
 
 -- Find monitor --------------------------------------------------------------
 local mon = peripheral.find("monitor")
@@ -86,17 +97,24 @@ local function msgColor(msg)
         return colors.orange
     elseif lower:find("stopped") or lower:find("warning") or lower:find("error") then
         return colors.red
-    elseif lower:find("mining layer") then
+    elseif lower:find("^%[%d+%] layer ") or lower:find("layer %d") then
         return colors.cyan
     end
     return colors.white
 end
 
 -- Main receive loop ---------------------------------------------------------
+print("[DBG] Entering receive loop...")
 while true do
-    local senderId, message, protocol = rednet.receive(PROTOCOL)
-    if type(message) == "string" then
+    local senderId, message, protocol = rednet.receive(PROTOCOL, 30)
+    if senderId == nil then
+        -- Timeout — print a heartbeat so the user knows the loop is alive.
+        print("[DBG] No message in 30s (still listening)...")
+    elseif type(message) == "string" then
+        print("[DBG] Received from " .. tostring(senderId) .. " proto=" .. tostring(protocol) .. ": " .. message)
         local prefix = "[" .. senderId .. "] "
         appendLine(prefix .. message, msgColor(message))
+    else
+        print("[DBG] Unexpected message type: " .. type(message) .. " from " .. tostring(senderId))
     end
 end

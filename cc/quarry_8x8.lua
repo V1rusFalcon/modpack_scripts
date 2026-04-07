@@ -22,28 +22,42 @@ local layerBlocksMined = 0
 -- Collect all attached modems and prefer a wireless one; rednet broadcasts
 -- only travel between wireless modems, so a wired modem would prevent the
 -- monitor from receiving messages.
+print("[DBG] Scanning for modems...")
+local allPeripherals = peripheral.getNames()
+print("[DBG] All peripherals: " .. table.concat(allPeripherals, ", "))
+
 local modemSide = nil
 do
     local modems = {peripheral.find("modem")}
+    print("[DBG] Modems found: " .. tostring(#modems))
     for _, m in ipairs(modems) do
-        if m.isWireless and m.isWireless() then
-            modemSide = peripheral.getName(m)
-            break
+        local side = peripheral.getName(m)
+        local isWL = m.isWireless and m.isWireless()
+        print("[DBG] Modem on '" .. side .. "' wireless=" .. tostring(isWL))
+        if isWL and not modemSide then
+            modemSide = side
         end
     end
     -- Fall back to any modem if no wireless one is present.
     if not modemSide and #modems > 0 then
         modemSide = peripheral.getName(modems[1])
+        print("[DBG] No wireless modem; falling back to '" .. modemSide .. "'")
     end
 end
 if modemSide then
     rednet.open(modemSide)
+    print("[DBG] Rednet opened on '" .. modemSide .. "', turtle ID=" .. tostring(os.getComputerID()))
+else
+    print("[DBG] No modem found — rednet disabled.")
 end
 
 local function log(msg)
     print(msg)
     if modemSide then
-        rednet.broadcast(msg, PROTOCOL)
+        local ok, err = pcall(rednet.broadcast, msg, PROTOCOL)
+        if not ok then
+            print("[DBG] rednet.broadcast failed: " .. tostring(err))
+        end
     end
 end
 -- ---------------------------------------------------------------------------
