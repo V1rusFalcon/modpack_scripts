@@ -1,4 +1,4 @@
--- ComputerCraft: Build a 5-layer platform (3 stone/cobblestone + 2 dirt).
+-- ComputerCraft: Build a platform with configurable dimensions and layer counts.
 -- The turtle sweeps each layer in a snake pattern and places blocks below itself.
 --
 -- Setup:
@@ -7,12 +7,37 @@
 --   Inventory: slots  1-8  = stone / cobblestone
 --              slots  9-16 = dirt
 
-local WIDTH  = 10  -- columns perpendicular to initial facing
-local LENGTH = 10  -- columns along initial facing
+-- --------------------------------------------------------------------------
+-- Prompt helpers
+-- --------------------------------------------------------------------------
 
-local STONE_LAYERS = 3
-local DIRT_LAYERS  = 2
-local TOTAL_LAYERS = STONE_LAYERS + DIRT_LAYERS  -- 5
+local function readNumber(prompt, default)
+    while true do
+        io.write(prompt .. " [" .. tostring(default) .. "]: ")
+        local line = io.read()
+        if line == nil or line == "" then
+            return default
+        end
+        local n = tonumber(line)
+        if n and n > 0 and math.floor(n) == n then
+            return math.floor(n)
+        end
+        print("Please enter a positive whole number.")
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- Ask for parameters
+-- --------------------------------------------------------------------------
+print("=== Platform Builder ===")
+print("Slots  1-8 : stone / cobblestone")
+print("Slots  9-16: dirt")
+print("")
+local WIDTH        = readNumber("Width  (columns perpendicular to facing)", 10)
+local LENGTH       = readNumber("Length (columns along facing)",            10)
+local STONE_LAYERS = readNumber("Stone / cobblestone layers (bottom)",       3)
+local DIRT_LAYERS  = readNumber("Dirt layers (top)",                         2)
+local TOTAL_LAYERS = STONE_LAYERS + DIRT_LAYERS
 
 local STONE_SLOTS, DIRT_SLOTS = {}, {}
 for i = 1,  8 do STONE_SLOTS[#STONE_SLOTS + 1] = i end
@@ -130,9 +155,9 @@ end
 -- --------------------------------------------------------------------------
 -- Main
 -- --------------------------------------------------------------------------
-print(string.format("Platform builder: %d x %d x 5 tall (3 stone + 2 dirt).", WIDTH, LENGTH))
-print("Slots  1-8 : stone / cobblestone")
-print("Slots  9-16: dirt")
+print(string.format(
+    "Building %d x %d x %d platform (%d stone + %d dirt).",
+    WIDTH, LENGTH, TOTAL_LAYERS, STONE_LAYERS, DIRT_LAYERS))
 print("Starting...")
 
 for layer = 1, TOTAL_LAYERS do

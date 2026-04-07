@@ -1,5 +1,4 @@
--- ComputerCraft: Flatten a WIDTH x LENGTH area to a uniform surface height.
--- Matches the top of a 5-layer platform (3 stone + 2 dirt) by default.
+-- ComputerCraft: Flatten a configurable area to a uniform surface height.
 --
 -- What this program does for every column in the area:
 --   * Removes all blocks above the target surface level.
@@ -11,10 +10,34 @@
 --   at the corner of the area to flatten, facing along the LENGTH direction.
 --   Load fill material (stone, cobblestone, dirt, …) into any inventory slots.
 
-local WIDTH         = 10  -- columns perpendicular to initial facing
-local LENGTH        = 10  -- columns along initial facing
-local TARGET_HEIGHT = 5   -- desired surface level (informational; turtle is placed
-                           -- manually at that height + 1 before running)
+-- --------------------------------------------------------------------------
+-- Prompt helpers
+-- --------------------------------------------------------------------------
+
+local function readNumber(prompt, default)
+    while true do
+        io.write(prompt .. " [" .. tostring(default) .. "]: ")
+        local line = io.read()
+        if line == nil or line == "" then
+            return default
+        end
+        local n = tonumber(line)
+        if n and n > 0 and math.floor(n) == n then
+            return math.floor(n)
+        end
+        print("Please enter a positive whole number.")
+    end
+end
+
+-- --------------------------------------------------------------------------
+-- Ask for parameters
+-- --------------------------------------------------------------------------
+print("=== Area Flattener ===")
+print("Fill material can be any block in any inventory slot.")
+print("")
+local WIDTH         = readNumber("Width  (columns perpendicular to facing)", 10)
+local LENGTH        = readNumber("Length (columns along facing)",            10)
+local TARGET_HEIGHT = readNumber("Target surface height (for reference)",     5)
 
 -- --------------------------------------------------------------------------
 -- Position / heading tracking  (relative to starting position)
@@ -135,7 +158,6 @@ print(string.format(
     "Flattening %d x %d area to surface height %d.",
     WIDTH, LENGTH, TARGET_HEIGHT))
 print("Turtle should be 1 block above the target surface, at the area corner.")
-print("Fill material can be any block in any inventory slot.")
 print("Starting...")
 
 for row = 1, WIDTH do
