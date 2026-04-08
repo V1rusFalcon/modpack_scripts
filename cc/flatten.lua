@@ -1,43 +1,51 @@
--- ComputerCraft: Flatten a configurable area to a uniform surface height.
---
--- What this program does for every column in the area:
---   * Removes all blocks above the target surface level.
---   * Places a fill block at the target surface level if none is present.
---   (Deep holes are not backfilled below the surface layer.)
+-- ComputerCraft: Area Flattener – CLIENT
+-- Connects to flatten_server, receives a column-chunk assignment, and flattens it.
 --
 -- Setup:
---   Place the turtle ONE BLOCK ABOVE the target surface level,
---   at the corner of the area to flatten, facing along the LENGTH direction.
+--   Attach a wireless modem to this turtle.
+--   Place ALL turtles at the SAME corner of the FULL area,
+--   ONE BLOCK ABOVE the target surface, facing along the LENGTH direction.
+--   Start flatten_server on any computer first, then run this on each turtle.
 --   Load fill material (stone, cobblestone, dirt, …) into any inventory slots.
 
--- --------------------------------------------------------------------------
--- Prompt helpers
--- --------------------------------------------------------------------------
+local SERVER_PROTOCOL = "modpack_flatten"
+local SERVER_HOSTNAME  = "flatten_server"
 
-local function readNumber(prompt, default)
-    while true do
-        io.write(prompt .. " [" .. tostring(default) .. "]: ")
-        local line = io.read()
-        if line == nil or line == "" then
-            return default
-        end
-        local n = tonumber(line)
-        if n and n > 0 and math.floor(n) == n then
-            return math.floor(n)
-        end
-        print("Please enter a positive whole number.")
+-- --------------------------------------------------------------------------
+-- Connect to server and receive task
+-- --------------------------------------------------------------------------
+local modem = peripheral.find("modem")
+if not modem then error("No modem found! Attach a wireless modem.") end
+rednet.open(peripheral.getName(modem))
+
+print("=== Area Flattener Client ===")
+print("Fill material can be any block in any inventory slot.")
+print("Looking up server (" .. SERVER_HOSTNAME .. ")...")
+
+local server_id = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
+if not server_id then
+    error("Server not found! Make sure flatten_server is running first.")
+end
+print("Server found (ID " .. server_id .. "). Requesting task...")
+
+rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
+
+local WIDTH, LENGTH, TARGET_HEIGHT, Z_OFFSET
+while true do
+    local sender, msg = rednet.receive(SERVER_PROTOCOL, 30)
+    if sender == nil then error("Timed out waiting for task assignment.") end
+    if sender == server_id and type(msg) == "table" and msg.type == "TASK_ASSIGN" then
+        WIDTH         = msg.width
+        LENGTH        = msg.length
+        TARGET_HEIGHT = msg.target_height
+        Z_OFFSET      = msg.z_offset
+        break
     end
 end
 
--- --------------------------------------------------------------------------
--- Ask for parameters
--- --------------------------------------------------------------------------
-print("=== Area Flattener ===")
-print("Fill material can be any block in any inventory slot.")
-print("")
-local WIDTH         = readNumber("Width  (columns perpendicular to facing)", 10)
-local LENGTH        = readNumber("Length (columns along facing)",            10)
-local TARGET_HEIGHT = readNumber("Target surface height (for reference)",     5)
+print(string.format(
+    "Task: %d wide x %d long, height=%d, z_offset=%d.",
+    WIDTH, LENGTH, TARGET_HEIGHT, Z_OFFSET))
 
 -- --------------------------------------------------------------------------
 -- Position / heading tracking  (relative to starting position)
@@ -152,13 +160,22 @@ local function fillSurface()
 end
 
 -- --------------------------------------------------------------------------
+-- Navigate to this turtle's starting column (z_offset steps to the right)
+-- --------------------------------------------------------------------------
+if Z_OFFSET > 0 then
+    face(1)  -- face +x (right when initially facing +z)
+    for _ = 1, Z_OFFSET do stepForward() end
+    face(0)  -- face back along length (+z)
+    px, py, pz = 0, 0, 0  -- reset to local origin
+end
+
+-- --------------------------------------------------------------------------
 -- Main
 -- --------------------------------------------------------------------------
 print(string.format(
-    "Flattening %d x %d area to surface height %d.",
+    "Flattening %d x %d section (surface height %d).",
     WIDTH, LENGTH, TARGET_HEIGHT))
 print("Turtle should be 1 block above the target surface, at the area corner.")
-print("Starting...")
 
 for row = 1, WIDTH do
     for col = 1, LENGTH do
@@ -179,4 +196,6 @@ end
 
 goTo(0, 0, 0)
 face(0)
-print("Flattening complete!")
+print("Section complete!")
+rednet.send(server_id, {type = "TASK_DONE"}, SERVER_PROTOCOL)
+print("Done!")

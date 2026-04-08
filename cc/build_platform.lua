@@ -1,43 +1,55 @@
--- ComputerCraft: Build a platform with configurable dimensions and layer counts.
--- The turtle sweeps each layer in a snake pattern and places blocks below itself.
+-- ComputerCraft: Platform builder – CLIENT
+-- Connects to platform_server, receives a column-chunk assignment, and builds it.
 --
 -- Setup:
---   Place the turtle ONE BLOCK ABOVE the bottom-left corner of the intended platform,
---   facing forward along the LENGTH direction (the long axis).
+--   Attach a wireless modem to this turtle.
+--   Place ALL turtles at the SAME bottom-left corner of the FULL platform area,
+--   ONE BLOCK ABOVE ground, facing along the LENGTH direction.
+--   Start platform_server on any computer first, then run this on each turtle.
 --   Inventory: slots  1-8  = stone / cobblestone
 --              slots  9-16 = dirt
 
--- --------------------------------------------------------------------------
--- Prompt helpers
--- --------------------------------------------------------------------------
+local SERVER_PROTOCOL = "modpack_platform"
+local SERVER_HOSTNAME  = "platform_server"
 
-local function readNumber(prompt, default)
-    while true do
-        io.write(prompt .. " [" .. tostring(default) .. "]: ")
-        local line = io.read()
-        if line == nil or line == "" then
-            return default
-        end
-        local n = tonumber(line)
-        if n and n > 0 and math.floor(n) == n then
-            return math.floor(n)
-        end
-        print("Please enter a positive whole number.")
+-- --------------------------------------------------------------------------
+-- Connect to server and receive task
+-- --------------------------------------------------------------------------
+local modem = peripheral.find("modem")
+if not modem then error("No modem found! Attach a wireless modem.") end
+rednet.open(peripheral.getName(modem))
+
+print("=== Platform Builder Client ===")
+print("Slots  1-8 : stone / cobblestone")
+print("Slots  9-16: dirt")
+print("Looking up server (" .. SERVER_HOSTNAME .. ")...")
+
+local server_id = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
+if not server_id then
+    error("Server not found! Make sure platform_server is running first.")
+end
+print("Server found (ID " .. server_id .. "). Requesting task...")
+
+rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
+
+local WIDTH, LENGTH, STONE_LAYERS, DIRT_LAYERS, Z_OFFSET
+while true do
+    local sender, msg = rednet.receive(SERVER_PROTOCOL, 30)
+    if sender == nil then error("Timed out waiting for task assignment.") end
+    if sender == server_id and type(msg) == "table" and msg.type == "TASK_ASSIGN" then
+        WIDTH        = msg.width
+        LENGTH       = msg.length
+        STONE_LAYERS = msg.stone_layers
+        DIRT_LAYERS  = msg.dirt_layers
+        Z_OFFSET     = msg.z_offset
+        break
     end
 end
 
--- --------------------------------------------------------------------------
--- Ask for parameters
--- --------------------------------------------------------------------------
-print("=== Platform Builder ===")
-print("Slots  1-8 : stone / cobblestone")
-print("Slots  9-16: dirt")
-print("")
-local WIDTH        = readNumber("Width  (columns perpendicular to facing)", 10)
-local LENGTH       = readNumber("Length (columns along facing)",            10)
-local STONE_LAYERS = readNumber("Stone / cobblestone layers (bottom)",       3)
-local DIRT_LAYERS  = readNumber("Dirt layers (top)",                         2)
 local TOTAL_LAYERS = STONE_LAYERS + DIRT_LAYERS
+print(string.format(
+    "Task: %d wide x %d long, %d stone + %d dirt, z_offset=%d.",
+    WIDTH, LENGTH, STONE_LAYERS, DIRT_LAYERS, Z_OFFSET))
 
 local STONE_SLOTS, DIRT_SLOTS = {}, {}
 for i = 1,  8 do STONE_SLOTS[#STONE_SLOTS + 1] = i end
@@ -153,19 +165,28 @@ local function buildLayer(slots)
 end
 
 -- --------------------------------------------------------------------------
+-- Navigate to this turtle's starting column (z_offset steps to the right)
+-- --------------------------------------------------------------------------
+if Z_OFFSET > 0 then
+    face(1)  -- face +x (right when initially facing +z)
+    for _ = 1, Z_OFFSET do stepForward() end
+    face(0)  -- face back along length (+z)
+    px, py, pz = 0, 0, 0  -- reset to local origin
+end
+
+-- --------------------------------------------------------------------------
 -- Main
 -- --------------------------------------------------------------------------
 print(string.format(
     "Building %d x %d x %d platform (%d stone + %d dirt).",
     WIDTH, LENGTH, TOTAL_LAYERS, STONE_LAYERS, DIRT_LAYERS))
-print("Starting...")
 
 for layer = 1, TOTAL_LAYERS do
     local isStone = (layer <= STONE_LAYERS)
     local slots   = isStone and STONE_SLOTS or DIRT_SLOTS
     local mat     = isStone and "stone" or "dirt"
 
-    print(string.format("Building layer %d/%d (%s) ...", layer, TOTAL_LAYERS, mat))
+    print(string.format("  Layer %d/%d (%s)...", layer, TOTAL_LAYERS, mat))
 
     -- For layer N the turtle works at py = N-1 (one above the block row).
     goTo(0, layer - 1, 0)
@@ -175,6 +196,7 @@ for layer = 1, TOTAL_LAYERS do
     goTo(0, layer - 1, 0)
 end
 
+print("Section complete!")
+rednet.send(server_id, {type = "TASK_DONE"}, SERVER_PROTOCOL)
 print(string.format(
-    "Platform complete! Turtle is at the top-left corner above layer %d.",
-    TOTAL_LAYERS))
+    "Done! Turtle is above layer %d of its assigned section.", TOTAL_LAYERS))
