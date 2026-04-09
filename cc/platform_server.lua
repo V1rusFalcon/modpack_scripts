@@ -6,10 +6,12 @@
 -- Setup:
 --   Attach a wireless modem (and optionally a monitor) to this computer.
 --   Run this server first, then run build_platform.lua on each turtle.
---   ALL turtles start at the SAME bottom-left corner, one block above ground,
---   facing along the LENGTH (+z) direction.
---   Place a chest directly behind turtle 1 (one block in the -z direction,
---   same height). Fill it with stone/cobblestone and lava buckets.
+--   ALL turtles start at the SAME position, one block above the build surface,
+--   facing along the LENGTH (+z) direction, with the supply chest directly in
+--   front of them (+z, same height).
+--   The work area is to the LEFT or RIGHT of the turtles' start position
+--   (choose when the server starts).
+--   Fill the chest with stone/cobblestone and lava buckets.
 
 local SERVER_PROTOCOL = "modpack_platform"
 local SERVER_HOSTNAME  = "platform_server"
@@ -25,6 +27,19 @@ local function readNumber(prompt, default)
         local n = tonumber(line)
         if n and n > 0 and math.floor(n) == n then return math.floor(n) end
         print("Please enter a positive whole number.")
+    end
+end
+
+local function readChoice(prompt, choices, default)
+    while true do
+        io.write(prompt .. " [" .. table.concat(choices, "/") .. "] (" .. default .. "): ")
+        local line = io.read()
+        if line == nil or line == "" then return default end
+        line = line:lower()
+        for _, c in ipairs(choices) do
+            if line == c then return c end
+        end
+        print("Please enter one of: " .. table.concat(choices, ", ") .. ".")
     end
 end
 
@@ -48,11 +63,14 @@ end
 -- Parameters
 -- --------------------------------------------------------------------------
 print("=== Platform Builder Server ===")
-print("Chest: stone/cobblestone + lava buckets, behind turtle 1 (z = -1).")
+print("Turtles face +z; chest is directly in front of them (+z).")
+print("Work area is to the LEFT or RIGHT of the turtles' start position.")
 print("")
-local WIDTH  = readNumber("Total width  (x, perpendicular to facing)", 10)
-local LENGTH = readNumber("Length (z, along turtles' facing)",         10)
-local LAYERS = readNumber("Total platform layers",                       5)
+local WIDTH      = readNumber("Total width  (x, perpendicular to facing)",    10)
+local LENGTH     = readNumber("Length (z, along turtles' facing)",             10)
+local LAYERS     = readNumber("Total platform layers",                           5)
+local START_SIDE = readChoice("Work area side (left/right of turtle start)",  {"left","right"}, "left")
+local BUILD_DIR  = readChoice("Build direction (up=terrain, down=water/void)", {"up","down"},   "up")
 
 -- --------------------------------------------------------------------------
 -- Work queue: one entry per column (global x = 0 … WIDTH-1)
