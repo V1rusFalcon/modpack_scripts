@@ -1,21 +1,21 @@
 -- ComputerCraft: Platform builder – CLIENT
 -- Dynamically receives one-column tasks from platform_server.
 -- All building material and lava bucket fuel come from the supply chest placed
--- directly behind turtle 1's start position (global z = -1, same height).
+-- directly IN FRONT of the turtle's start position (global z = +1, same height).
 --
 -- Setup:
 --   Attach a wireless modem to this turtle.
---   ALL turtles start at the SAME bottom-left corner, one block above ground,
---   facing along the LENGTH (+z) direction.
---   Place the supply chest one block behind turtle 1 (at z = -1).
---   Fill it with stone/cobblestone and lava buckets.
+--   ALL turtles start at the SAME position, one block above the build surface,
+--   facing along the LENGTH (+z) direction, with the chest directly in front.
+--   The work area is to the LEFT or RIGHT (configured on the server).
+--   Fill the chest with stone/cobblestone, dirt, and lava buckets.
 --   Start platform_server first, then run this on every turtle.
 --   Additional turtles can be added at any time — just start them the same way.
 
 local SERVER_PROTOCOL = "modpack_platform"
 local SERVER_HOSTNAME  = "platform_server"
 
-local FUEL_THRESHOLD  = 500    -- go resupply when fuel drops below this
+local FUEL_THRESHOLD  = 1000   -- go resupply when fuel drops below this
 local FUEL_TARGET     = 10000  -- desired fuel level after resupply
 local MAT_THRESHOLD   = 16     -- go restock when fewer than this many blocks remain
 local HEARTBEAT_EVERY = 8      -- send HEARTBEAT to server every N turtle operations
@@ -51,6 +51,9 @@ local function sendHeartbeat()
         }, SERVER_PROTOCOL)
     end
 end
+
+-- --------------------------------------------------------------------------
+-- Global position / heading tracking
 -- All turtles share the same origin (0, 0, 0).
 -- dir: 0=+z  1=+x  2=-z  3=-x
 -- --------------------------------------------------------------------------
@@ -102,16 +105,32 @@ local function goTo(tx, ty, tz)
 end
 
 -- --------------------------------------------------------------------------
--- Inventory helpers
+-- Material type helpers
+-- "stone" matches cobblestone, stone, granite, andesite, diorite, deepslate …
+-- "dirt"  matches dirt, grass_block, podzol, mud …
 -- --------------------------------------------------------------------------
+local STONE_PATTERNS = {"cobble", "stone", "granite", "diorite", "andesite", "deepslate", "blackstone", "smooth"}
+local DIRT_PATTERNS  = {"dirt", "grass", "podzol", "mycelium", "mud"}
 
--- Count non-bucket items (building blocks).
-local function countBuildBlocks()
+local function matchesMat(name, patterns)
+    for _, p in ipairs(patterns) do
+        if name:find(p, 1, true) then return true end
+    end
+    return false
+end
+
+-- Count non-bucket items of a given type ("stone", "dirt") or all if type is nil.
+local function countBuildBlocks(mattype)
     local n = 0
     for slot = 1, 16 do
         local item = turtle.getItemDetail(slot)
         if item and not item.name:find("bucket") then
-            n = n + turtle.getItemCount(slot)
+            local nm = item.name:lower()
+            if mattype == nil
+               or (mattype == "stone" and matchesMat(nm, STONE_PATTERNS))
+               or (mattype == "dirt"  and matchesMat(nm, DIRT_PATTERNS)) then
+                n = n + turtle.getItemCount(slot)
+            end
         end
     end
     return n
@@ -124,30 +143,34 @@ local function findEmptySlot()
     return nil
 end
 
--- Select a non-bucket slot to place; returns true on success.
-local function selectBuildBlock()
+-- Select a block matching mattype ("stone" or "dirt"); returns true on success.
+local function selectBlockByType(mattype)
+    local patterns = (mattype == "dirt") and DIRT_PATTERNS or STONE_PATTERNS
     for slot = 1, 16 do
         local item = turtle.getItemDetail(slot)
-        if item and not item.name:find("bucket") and turtle.getItemCount(slot) > 0 then
-            turtle.select(slot)
-            return true
+        if item and turtle.getItemCount(slot) > 0 then
+            local nm = item.name:lower()
+            if not nm:find("bucket") and matchesMat(nm, patterns) then
+                turtle.select(slot)
+                return true
+            end
         end
     end
     return false
 end
 
 -- --------------------------------------------------------------------------
--- Resupply from the supply chest (global 0, 0, -1 — directly behind turtle 1)
--- Refuels with lava buckets (returns empty bucket to chest).
--- Restocks building blocks (stone / cobblestone).
+-- Resupply from the supply chest (global 0, 0, +1 — directly in front).
+-- Refuels with lava buckets (empty buckets are left inside the chest).
+-- Restocks building blocks (stone, dirt, …).
 -- --------------------------------------------------------------------------
 local function resupply()
     local spx, spy, spz, spdir = px, py, pz, pdir
-    print(string.format("Resupply (fuel=%d, blocks=%d)…",
-        turtle.getFuelLevel(), countBuildBlocks()))
+    print(string.format("Resupply (fuel=%d, stone=%d, dirt=%d)…",
+        turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
 
     goTo(0, 0, 0)
-    face(2)  -- face -z so the chest at (0, 0, -1) is directly in front
+    face(0)  -- face +z so the chest at (0, 0, 1) is directly in front
 
     local loops = 0
     while (turtle.getFuelLevel() < FUEL_TARGET or countBuildBlocks() < MAT_THRESHOLD)
@@ -159,15 +182,15 @@ local function resupply()
 
         local item = turtle.getItemDetail(slot)
         if item and item.name:find("lava_bucket") then
-            turtle.refuel()   -- consumes lava; empty bucket stays in slot
+            turtle.refuel()   -- consumes lava; empty bucket stays in the slot
             turtle.drop()     -- return empty bucket to the chest
         end
-        -- Stone / cobblestone stays in inventory for building.
+        -- Stone / dirt / cobblestone stays in inventory for building.
         loops = loops + 1
     end
 
-    print(string.format("  → fuel=%d, blocks=%d",
-        turtle.getFuelLevel(), countBuildBlocks()))
+    print(string.format("  → fuel=%d, stone=%d, dirt=%d",
+        turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
     goTo(spx, spy, spz)
     face(spdir)
 end
@@ -190,22 +213,28 @@ local function sendStatus(pct)
 end
 
 -- --------------------------------------------------------------------------
--- Build a single column (1 wide × length long × layers tall).
--- Turtle navigates to (col_x, 0, 0) then builds each layer upward,
--- placing blocks below itself in a straight row along +z.
+-- Build a single column (1 wide × length long × #layers tall).
+-- col_x:           0-based column index from the server queue.
+-- layer_materials: array of "stone"/"dirt" per layer (index = layer number).
+-- start_side:      "left" or "right" — which side of origin the work area is on.
+-- build_dir:       "up" (layers stack upward) or "down" (layers go deeper).
 -- --------------------------------------------------------------------------
-local function buildColumn(col_x, length, layers)
-    local total = length * layers
-    local placed = 0
+local function buildColumn(col_x, length, layer_materials, start_side, build_dir)
+    local layers  = #layer_materials
+    local gx      = (start_side == "left") and -(col_x + 1) or (col_x + 1)
+    local y_sign  = (build_dir  == "up")   and  1           or -1
+    local total   = length * layers
+    local placed  = 0
 
     for layer = 1, layers do
+        local mattype = layer_materials[layer] or "stone"
         checkResupply()
-        goTo(col_x, layer - 1, 0)
+        goTo(gx, y_sign * (layer - 1), 0)
         face(0)  -- face +z along length
 
         for z = 1, length do
             checkResupply()
-            while not selectBuildBlock() do resupply() end
+            while not selectBlockByType(mattype) do resupply() end
             turtle.placeDown()
             sendHeartbeat()
             placed = placed + 1
@@ -215,8 +244,8 @@ local function buildColumn(col_x, length, layers)
             if z < length then stepForward() end
         end
 
-        -- Return to column-start at this height before ascending.
-        goTo(col_x, layer - 1, 0)
+        -- Return to column-start at this height before ascending/descending.
+        goTo(gx, y_sign * (layer - 1), 0)
     end
 
     sendStatus(100)
@@ -242,11 +271,14 @@ while true do
     end
 
     if msg.type == "TASK_ASSIGN" then
-        local col_x  = msg.col_x
-        local length = msg.length
-        local layers = msg.layers
-        print(string.format("Col %d: %d × %d blocks.", col_x, length, layers))
-        buildColumn(col_x, length, layers)
+        local col_x          = msg.col_x
+        local length         = msg.length
+        local layer_mats     = msg.layer_materials or {"stone"}
+        local start_side     = msg.start_side      or "left"
+        local build_dir      = msg.build_dir        or "up"
+        print(string.format("Col %d: %d positions × %d layers (%s, %s).",
+            col_x, length, #layer_mats, start_side, build_dir))
+        buildColumn(col_x, length, layer_mats, start_side, build_dir)
         print(string.format("Col %d done.", col_x))
         rednet.send(server_id, {type = "TASK_DONE",   col_x = col_x}, SERVER_PROTOCOL)
         rednet.send(server_id, {type = "REQUEST_TASK"},               SERVER_PROTOCOL)

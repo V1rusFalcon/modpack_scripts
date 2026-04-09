@@ -1,7 +1,7 @@
 -- ComputerCraft: Area Flattener – CLIENT
 -- Dynamically receives one-column tasks from flatten_server.
--- Fuel and fill material come from the supply chest placed directly behind
--- turtle 1's start position (global z = -1, same height).
+-- Fuel and fill material come from the supply chest placed directly IN FRONT
+-- of the turtle's start position (global z = +1, same height).
 --
 -- What this program does for every position in its assigned column:
 --   * Removes all blocks above the target surface level.
@@ -10,17 +10,17 @@
 --
 -- Setup:
 --   Attach a wireless modem to this turtle.
---   ALL turtles start at the SAME corner, one block above the target surface,
---   facing along the LENGTH (+z) direction.
---   Place the supply chest one block behind turtle 1 (at z = -1).
---   Fill it with fill material (stone/cobblestone) and lava buckets.
+--   ALL turtles start at the SAME position, one block above the target surface,
+--   facing along the LENGTH (+z) direction, with the chest directly in front.
+--   The work area is to the LEFT or RIGHT (configured on the server).
+--   Fill the chest with fill material (stone/cobblestone) and lava buckets.
 --   Start flatten_server first, then run this on every turtle.
 --   Additional turtles can be added at any time.
 
 local SERVER_PROTOCOL = "modpack_flatten"
 local SERVER_HOSTNAME  = "flatten_server"
 
-local FUEL_THRESHOLD  = 500
+local FUEL_THRESHOLD  = 1000
 local FUEL_TARGET     = 10000
 local MAT_THRESHOLD   = 16
 local HEARTBEAT_EVERY = 8      -- send HEARTBEAT to server every N turtle operations
@@ -56,6 +56,9 @@ local function sendHeartbeat()
         }, SERVER_PROTOCOL)
     end
 end
+
+-- --------------------------------------------------------------------------
+-- Global position / heading tracking
 -- dir: 0=+z  1=+x  2=-z  3=-x
 -- --------------------------------------------------------------------------
 local px, py, pz = 0, 0, 0
@@ -138,7 +141,8 @@ local function selectFillBlock()
 end
 
 -- --------------------------------------------------------------------------
--- Resupply from chest (global 0, 0, -1 — directly behind turtle 1)
+-- Resupply from chest (global 0, 0, +1 — directly in front of turtle start).
+-- Empty lava buckets are left inside the chest.
 -- --------------------------------------------------------------------------
 local function resupply()
     local spx, spy, spz, spdir = px, py, pz, pdir
@@ -146,7 +150,7 @@ local function resupply()
         turtle.getFuelLevel(), countFillBlocks()))
 
     goTo(0, 0, 0)
-    face(2)  -- face -z; chest is at (0, 0, -1)
+    face(0)  -- face +z; chest is at (0, 0, 1)
 
     local loops = 0
     while (turtle.getFuelLevel() < FUEL_TARGET or countFillBlocks() < MAT_THRESHOLD)
@@ -217,11 +221,13 @@ end
 
 -- --------------------------------------------------------------------------
 -- Flatten a single column (1 wide x length long strip along +z).
+-- col_x:      0-based column index; start_side maps it to a signed global x.
 -- --------------------------------------------------------------------------
-local function flattenColumn(col_x, length)
+local function flattenColumn(col_x, length, start_side)
+    local gx = (start_side == "left") and -(col_x + 1) or (col_x + 1)
     local processed = 0
 
-    goTo(col_x, 0, 0)
+    goTo(gx, 0, 0)
     face(0)  -- face +z
 
     for z = 1, length do
@@ -236,7 +242,7 @@ local function flattenColumn(col_x, length)
         if z < length then stepForward() end
     end
 
-    goTo(col_x, 0, 0)
+    goTo(gx, 0, 0)
     sendStatus(100)
 end
 
@@ -260,10 +266,11 @@ while true do
     end
 
     if msg.type == "TASK_ASSIGN" then
-        local col_x  = msg.col_x
-        local length = msg.length
-        print(string.format("Col %d: flatten %d positions.", col_x, length))
-        flattenColumn(col_x, length)
+        local col_x     = msg.col_x
+        local length    = msg.length
+        local start_side = msg.start_side or "left"
+        print(string.format("Col %d: flatten %d positions (%s).", col_x, length, start_side))
+        flattenColumn(col_x, length, start_side)
         print(string.format("Col %d done.", col_x))
         rednet.send(server_id, {type = "TASK_DONE",   col_x = col_x}, SERVER_PROTOCOL)
         rednet.send(server_id, {type = "REQUEST_TASK"},               SERVER_PROTOCOL)

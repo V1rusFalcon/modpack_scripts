@@ -109,6 +109,7 @@ local function refreshMonitor()
     mp("[" .. string.rep("#", filled) .. string.rep("-", bar_w - filled) .. "]")
     mp("")
     local now_ts = os.epoch("utc") / 1000
+    local any_low_fuel = false
     for id, st in pairs(turtle_status) do
         local age = last_seen[id] and (now_ts - last_seen[id]) or 999
         local label
@@ -119,8 +120,11 @@ local function refreshMonitor()
         else
             label = string.format("%3d%%", st.pct)
         end
-        mp(string.format("T%-4d Fuel:%-6d %s", id, st.fuel, label))
+        local fuel_tag = (st.fuel < 1000 and not st.idle) and "!" or " "
+        if st.fuel < 1000 and not st.idle then any_low_fuel = true end
+        mp(string.format("T%-4d%s Fuel:%-6d %s", id, fuel_tag, st.fuel, label))
     end
+    if any_low_fuel then mp("*** ADD FUEL! ***") end
 end
 
 -- --------------------------------------------------------------------------
@@ -148,6 +152,7 @@ while done_count < WIDTH do
                     col_x         = col_x,
                     length        = LENGTH,
                     target_height = TARGET_HEIGHT,
+                    start_side    = START_SIDE,
                 }, SERVER_PROTOCOL)
                 print(string.format(
                     "  Turtle %d → col %d  (%d left)", sender, col_x, #work_queue))

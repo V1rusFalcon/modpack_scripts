@@ -66,11 +66,17 @@ print("=== Platform Builder Server ===")
 print("Turtles face +z; chest is directly in front of them (+z).")
 print("Work area is to the LEFT or RIGHT of the turtles' start position.")
 print("")
-local WIDTH      = readNumber("Total width  (x, perpendicular to facing)",    10)
-local LENGTH     = readNumber("Length (z, along turtles' facing)",             10)
-local LAYERS     = readNumber("Total platform layers",                           5)
-local START_SIDE = readChoice("Work area side (left/right of turtle start)",  {"left","right"}, "left")
-local BUILD_DIR  = readChoice("Build direction (up=terrain, down=water/void)", {"up","down"},   "up")
+local WIDTH        = readNumber("Total width  (x, perpendicular to facing)",    10)
+local LENGTH       = readNumber("Length (z, along turtles' facing)",             10)
+local STONE_LAYERS = readNumber("Stone layers (bottom of platform)",              3)
+local DIRT_LAYERS  = readNumber("Dirt layers  (top of platform)",                 2)
+local LAYERS       = STONE_LAYERS + DIRT_LAYERS
+local START_SIDE   = readChoice("Work area side (left/right of turtle start)",  {"left","right"}, "left")
+local BUILD_DIR    = readChoice("Build direction (up=terrain, down=water/void)", {"up","down"},   "up")
+
+local layer_materials = {}
+for i = 1, STONE_LAYERS do layer_materials[i] = "stone" end
+for i = 1, DIRT_LAYERS  do layer_materials[STONE_LAYERS + i] = "dirt" end
 
 -- --------------------------------------------------------------------------
 -- Work queue: one entry per column (global x = 0 … WIDTH-1)
@@ -87,8 +93,8 @@ for x = 0, WIDTH - 1 do
 end
 
 print(string.format(
-    "\nJob: %d × %d × %d (%d column tasks). Listening for turtles…",
-    WIDTH, LENGTH, LAYERS, WIDTH))
+    "\nJob: %d × %d, %d stone + %d dirt layers (%d col tasks, %s, %s). Listening for turtles…",
+    WIDTH, LENGTH, STONE_LAYERS, DIRT_LAYERS, WIDTH, START_SIDE, BUILD_DIR))
 
 -- --------------------------------------------------------------------------
 -- Monitor refresh
@@ -110,6 +116,7 @@ local function refreshMonitor()
     mp("[" .. string.rep("#", filled) .. string.rep("-", bar_w - filled) .. "]")
     mp("")
     local now_ts = os.epoch("utc") / 1000
+    local any_low_fuel = false
     for id, st in pairs(turtle_status) do
         local age = last_seen[id] and (now_ts - last_seen[id]) or 999
         local label
@@ -120,8 +127,11 @@ local function refreshMonitor()
         else
             label = string.format("%3d%%", st.pct)
         end
-        mp(string.format("T%-4d Fuel:%-6d %s", id, st.fuel, label))
+        local fuel_tag = (st.fuel < 1000 and not st.idle) and "!" or " "
+        if st.fuel < 1000 and not st.idle then any_low_fuel = true end
+        mp(string.format("T%-4d%s Fuel:%-6d %s", id, fuel_tag, st.fuel, label))
     end
+    if any_low_fuel then mp("*** ADD FUEL! ***") end
 end
 
 -- --------------------------------------------------------------------------
@@ -145,10 +155,13 @@ while done_count < WIDTH do
                 turtle_status[sender].pct  = 0
                 turtle_status[sender].idle = false
                 rednet.send(sender, {
-                    type   = "TASK_ASSIGN",
-                    col_x  = col_x,
-                    length = LENGTH,
-                    layers = LAYERS,
+                    type            = "TASK_ASSIGN",
+                    col_x           = col_x,
+                    length          = LENGTH,
+                    layers          = LAYERS,
+                    layer_materials = layer_materials,
+                    start_side      = START_SIDE,
+                    build_dir       = BUILD_DIR,
                 }, SERVER_PROTOCOL)
                 print(string.format(
                     "  Turtle %d → col %d  (%d left)", sender, col_x, #work_queue))
@@ -216,6 +229,6 @@ if monitor then
     monitor.setCursorPos(1, 1)
     monitor.write("=== PLATFORM COMPLETE ===")
     monitor.setCursorPos(1, 2)
-    monitor.write(string.format("%d x %d x %d built!", WIDTH, LENGTH, LAYERS))
+    monitor.write(string.format("%dx%dx%d (%dst+%ddi)!", WIDTH, LENGTH, LAYERS, STONE_LAYERS, DIRT_LAYERS))
 end
 rednet.unhost(SERVER_PROTOCOL)
