@@ -175,8 +175,10 @@ local function resupply()
     face(spdir)
 end
 
-local function checkResupply()
-    if turtle.getFuelLevel() < FUEL_THRESHOLD or countFillBlocks() < MAT_THRESHOLD then
+-- Only check/top-up fuel; used during active work to avoid mid-column
+-- material trips to the chest.
+local function checkFuel()
+    if turtle.getFuelLevel() < FUEL_THRESHOLD then
         resupply()
     end
 end
@@ -191,6 +193,9 @@ local function sendStatus(pct)
         pct  = pct,
     }, SERVER_PROTOCOL)
 end
+
+-- Remembered from the most recent TASK_ASSIGN (used when parking after NO_MORE_TASKS).
+local task_start_side = "left"
 
 -- --------------------------------------------------------------------------
 -- Per-position flatten actions
@@ -231,7 +236,7 @@ local function flattenColumn(col_x, length, start_side)
     face(0)  -- face +z
 
     for z = 1, length do
-        checkResupply()
+        checkFuel()
         clearAbove()
         fillSurface()
         sendHeartbeat()
@@ -249,7 +254,9 @@ end
 -- --------------------------------------------------------------------------
 -- Main task loop
 -- --------------------------------------------------------------------------
-checkResupply()
+-- Initial startup: ensure fuel and at least a minimal stock before first task.
+checkFuel()
+if countFillBlocks() < MAT_THRESHOLD then resupply() end
 print("Requesting first task...")
 rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
 
@@ -261,22 +268,29 @@ while true do
     until sender == server_id and type(msg) == "table"
 
     if msg.type == "NO_MORE_TASKS" then
-        print("No more tasks. Returning to base.")
+        -- Park one block on the opposite side of the work area so other turtles
+        -- and the resupply path stay clear.
+        local park_x = (task_start_side == "left") and 1 or -1
+        print("No more tasks. Parking on opposite side (x=" .. park_x .. ").")
+        goTo(park_x, 0, 0)
+        face(0)
+        print("Parked.")
         break
     end
 
     if msg.type == "TASK_ASSIGN" then
-        local col_x     = msg.col_x
-        local length    = msg.length
-        local start_side = msg.start_side or "left"
+        local col_x      = msg.col_x
+        local length     = msg.length
+        local start_side = msg.start_side or task_start_side
+        task_start_side  = start_side  -- remember for idle-parking
         print(string.format("Col %d: flatten %d positions (%s).", col_x, length, start_side))
         flattenColumn(col_x, length, start_side)
         print(string.format("Col %d done.", col_x))
         rednet.send(server_id, {type = "TASK_DONE",   col_x = col_x}, SERVER_PROTOCOL)
-        rednet.send(server_id, {type = "REQUEST_TASK"},               SERVER_PROTOCOL)
+        -- Drain inventory across columns: only resupply when material is actually low.
+        if countFillBlocks() < MAT_THRESHOLD then resupply() end
+        rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
     end
 end
 
-goTo(0, 0, 0)
-face(0)
 print("Done!")

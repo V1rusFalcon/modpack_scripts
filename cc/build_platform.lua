@@ -195,8 +195,10 @@ local function resupply()
     face(spdir)
 end
 
-local function checkResupply()
-    if turtle.getFuelLevel() < FUEL_THRESHOLD or countBuildBlocks() < MAT_THRESHOLD then
+-- Only check/top-up fuel; used during active building to avoid mid-column
+-- material trips to the chest.
+local function checkFuel()
+    if turtle.getFuelLevel() < FUEL_THRESHOLD then
         resupply()
     end
 end
@@ -211,6 +213,9 @@ local function sendStatus(pct)
         pct  = pct,
     }, SERVER_PROTOCOL)
 end
+
+-- Remembered from the most recent TASK_ASSIGN (used when parking after NO_MORE_TASKS).
+local task_start_side = "left"
 
 -- --------------------------------------------------------------------------
 -- Build a single column (1 wide × length long × #layers tall).
@@ -228,12 +233,13 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
 
     for layer = 1, layers do
         local mattype = layer_materials[layer] or "stone"
-        checkResupply()
+        checkFuel()
         goTo(gx, y_sign * (layer - 1), 0)
         face(0)  -- face +z along length
 
         for z = 1, length do
-            checkResupply()
+            checkFuel()
+            -- Only resupply if this specific material type is completely exhausted.
             while not selectBlockByType(mattype) do resupply() end
             turtle.placeDown()
             sendHeartbeat()
@@ -254,7 +260,9 @@ end
 -- --------------------------------------------------------------------------
 -- Main task loop — keep requesting columns until the server has no more
 -- --------------------------------------------------------------------------
-checkResupply()
+-- Initial startup: ensure fuel and at least a minimal stock before first task.
+checkFuel()
+if countBuildBlocks() < MAT_THRESHOLD then resupply() end
 print("Requesting first task…")
 rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
 
@@ -266,25 +274,32 @@ while true do
     until sender == server_id and type(msg) == "table"
 
     if msg.type == "NO_MORE_TASKS" then
-        print("No more tasks. Returning to base.")
+        -- Park one block on the opposite side of the work area so other turtles
+        -- and the resupply path stay clear.
+        local park_x = (task_start_side == "left") and 1 or -1
+        print("No more tasks. Parking on opposite side (x=" .. park_x .. ").")
+        goTo(park_x, 0, 0)
+        face(0)
+        print("Parked.")
         break
     end
 
     if msg.type == "TASK_ASSIGN" then
-        local col_x          = msg.col_x
-        local length         = msg.length
-        local layer_mats     = msg.layer_materials or {"stone"}
-        local start_side     = msg.start_side      or "left"
-        local build_dir      = msg.build_dir        or "up"
+        local col_x      = msg.col_x
+        local length     = msg.length
+        local layer_mats = msg.layer_materials or {"stone"}
+        local start_side = msg.start_side      or task_start_side
+        local build_dir  = msg.build_dir        or "up"
+        task_start_side  = start_side  -- remember for idle-parking
         print(string.format("Col %d: %d positions × %d layers (%s, %s).",
             col_x, length, #layer_mats, start_side, build_dir))
         buildColumn(col_x, length, layer_mats, start_side, build_dir)
         print(string.format("Col %d done.", col_x))
-        rednet.send(server_id, {type = "TASK_DONE",   col_x = col_x}, SERVER_PROTOCOL)
-        rednet.send(server_id, {type = "REQUEST_TASK"},               SERVER_PROTOCOL)
+        rednet.send(server_id, {type = "TASK_DONE", col_x = col_x}, SERVER_PROTOCOL)
+        -- Drain inventory across columns: only resupply when material is actually low.
+        if countBuildBlocks() < MAT_THRESHOLD then resupply() end
+        rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
     end
 end
 
-goTo(0, 0, 0)
-face(0)
 print("Done!")
