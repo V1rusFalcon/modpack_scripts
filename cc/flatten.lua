@@ -20,9 +20,10 @@
 local SERVER_PROTOCOL = "modpack_flatten"
 local SERVER_HOSTNAME  = "flatten_server"
 
-local FUEL_THRESHOLD = 500
-local FUEL_TARGET    = 10000
-local MAT_THRESHOLD  = 16
+local FUEL_THRESHOLD  = 500
+local FUEL_TARGET     = 10000
+local MAT_THRESHOLD   = 16
+local HEARTBEAT_EVERY = 8      -- send HEARTBEAT to server every N turtle operations
 
 -- --------------------------------------------------------------------------
 -- Connect to server
@@ -41,7 +42,20 @@ end
 print("Server found (ID " .. server_id .. ").")
 
 -- --------------------------------------------------------------------------
--- Global position / heading tracking
+-- Heartbeat
+-- Sent every HEARTBEAT_EVERY turtle operations so the server can detect
+-- when this turtle has been removed or has crashed.
+-- --------------------------------------------------------------------------
+local _hb_count = 0
+local function sendHeartbeat()
+    _hb_count = (_hb_count + 1) % HEARTBEAT_EVERY
+    if _hb_count == 0 then
+        rednet.send(server_id, {
+            type = "HEARTBEAT",
+            fuel = turtle.getFuelLevel(),
+        }, SERVER_PROTOCOL)
+    end
+end
 -- dir: 0=+z  1=+x  2=-z  3=-x
 -- --------------------------------------------------------------------------
 local px, py, pz = 0, 0, 0
@@ -65,6 +79,7 @@ local function stepForward()
     elseif pdir == 2 then pz = pz - 1
     else                   px = px - 1
     end
+    sendHeartbeat()
 end
 
 local function stepUp()
@@ -213,6 +228,7 @@ local function flattenColumn(col_x, length)
         checkResupply()
         clearAbove()
         fillSurface()
+        sendHeartbeat()
         processed = processed + 1
         if processed % 8 == 0 then
             sendStatus(math.floor(processed * 100 / length))

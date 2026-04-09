@@ -57,10 +57,12 @@ local TARGET_HEIGHT = readNumber("Target surface height (for reference)",       
 -- --------------------------------------------------------------------------
 -- Work queue: one entry per column (global x = 0 … WIDTH-1)
 -- --------------------------------------------------------------------------
-local work_queue    = {}
-local in_progress   = {}
-local done_count    = 0
-local turtle_status = {}
+local work_queue       = {}
+local in_progress      = {}
+local done_count       = 0
+local turtle_status    = {}
+local last_seen        = {}     -- [turtle_id] = os.epoch("utc")/1000 of last message
+local HEARTBEAT_TIMEOUT = 30    -- seconds of silence before a turtle is considered dead
 
 for x = 0, WIDTH - 1 do
     work_queue[#work_queue + 1] = x
@@ -89,8 +91,17 @@ local function refreshMonitor()
     mp(string.format("Done: %d/%d cols  %d%%", done_count, WIDTH, total_pct))
     mp("[" .. string.rep("#", filled) .. string.rep("-", bar_w - filled) .. "]")
     mp("")
+    local now_ts = os.epoch("utc") / 1000
     for id, st in pairs(turtle_status) do
-        local label = st.idle and "idle" or string.format("%3d%%", st.pct)
+        local age = last_seen[id] and (now_ts - last_seen[id]) or 999
+        local label
+        if age > HEARTBEAT_TIMEOUT then
+            label = "DEAD"
+        elseif st.idle then
+            label = "idle"
+        else
+            label = string.format("%3d%%", st.pct)
+        end
         mp(string.format("T%-4d Fuel:%-6d %s", id, st.fuel, label))
     end
 end
@@ -102,6 +113,8 @@ while done_count < WIDTH do
     local sender, msg = rednet.receive(SERVER_PROTOCOL, 5)
 
     if sender and type(msg) == "table" then
+        -- Any message counts as proof the turtle is alive.
+        last_seen[sender] = os.epoch("utc") / 1000
 
         if msg.type == "REQUEST_TASK" then
             if not turtle_status[sender] then
@@ -145,10 +158,33 @@ while done_count < WIDTH do
                 turtle_status[sender].pct  = msg.pct  or 0
                 turtle_status[sender].idle = false
             end
+
+        elseif msg.type == "HEARTBEAT" then
+            if turtle_status[sender] then
+                turtle_status[sender].fuel = msg.fuel or turtle_status[sender].fuel
+            end
         end
 
         refreshMonitor()
     else
+        -- Poll timeout: check for turtles that have gone silent.
+        local now = os.epoch("utc") / 1000
+        local dead = {}
+        for id, _ in pairs(in_progress) do
+            if last_seen[id] == nil or (now - last_seen[id]) > HEARTBEAT_TIMEOUT then
+                dead[#dead + 1] = id
+            end
+        end
+        for _, id in ipairs(dead) do
+            local col_x = in_progress[id]
+            print(string.format("  Turtle %d timed out! Re-queuing col %d.", id, col_x))
+            table.insert(work_queue, 1, col_x)
+            in_progress[id] = nil
+            if turtle_status[id] then
+                turtle_status[id].pct  = 0
+                turtle_status[id].idle = false
+            end
+        end
         refreshMonitor()
     end
 end
