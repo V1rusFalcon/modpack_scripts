@@ -1,13 +1,15 @@
 -- ComputerCraft: Area Flattener Server
--- Prompts for job parameters and coordinates multiple turtle clients.
+-- Dynamic multi-turtle coordination: turtles may join at any time.
+-- Work is assigned one column at a time; finished turtles request new columns
+-- automatically until the queue is empty.
 --
 -- Setup:
---   Attach a wireless modem to this computer.
---   Run this program first, then run flatten.lua on each turtle.
---   All turtles must start at the SAME corner of the full area,
---   ONE BLOCK ABOVE the target surface, facing along the LENGTH direction.
---   The server assigns each turtle a WIDTH chunk and tells it how far right to
---   move before starting (z_offset).
+--   Attach a wireless modem (and optionally a monitor) to this computer.
+--   Run this server first, then run flatten.lua on each turtle.
+--   ALL turtles start at the SAME corner, one block above the target surface,
+--   facing along the LENGTH (+z) direction.
+--   Place a chest directly behind turtle 1 (z = -1, same height).
+--   Fill it with fill material (stone/cobblestone) and lava buckets.
 
 local SERVER_PROTOCOL = "modpack_flatten"
 local SERVER_HOSTNAME  = "flatten_server"
@@ -27,97 +29,139 @@ local function readNumber(prompt, default)
 end
 
 -- --------------------------------------------------------------------------
--- Open modem
+-- Peripherals
 -- --------------------------------------------------------------------------
 local modem = peripheral.find("modem")
 if not modem then error("No modem found! Attach a wireless modem.") end
 rednet.open(peripheral.getName(modem))
 rednet.host(SERVER_PROTOCOL, SERVER_HOSTNAME)
 
--- --------------------------------------------------------------------------
--- Gather parameters
--- --------------------------------------------------------------------------
-print("=== Area Flattener Server ===")
-print("")
-local WIDTH         = readNumber("Total width  (perpendicular to turtles' facing)", 10)
-local LENGTH        = readNumber("Length (along turtles' facing)",                  10)
-local TARGET_HEIGHT = readNumber("Target surface height (for reference)",             5)
-local NUM_TURTLES   = readNumber("Number of turtles",                                1)
+local monitor = peripheral.find("monitor")
+if monitor then
+    monitor.setTextScale(0.5)
+    monitor.clear()
+    monitor.setCursorPos(1, 1)
+    monitor.write("Area Flattener starting...")
+end
 
 -- --------------------------------------------------------------------------
--- Divide WIDTH into chunks (one per turtle)
+-- Parameters
 -- --------------------------------------------------------------------------
-local chunks  = {}
-local base    = math.floor(WIDTH / NUM_TURTLES)
-local extra   = WIDTH % NUM_TURTLES
-local z_off   = 0
-for i = 1, NUM_TURTLES do
-    local w   = base + (i <= extra and 1 or 0)
-    chunks[i] = {width = w, z_offset = z_off}
-    z_off     = z_off + w
+print("=== Area Flattener Server ===")
+print("Chest: fill material + lava buckets, behind turtle 1 (z = -1).")
+print("")
+local WIDTH         = readNumber("Total width  (x, perpendicular to facing)", 10)
+local LENGTH        = readNumber("Length (z, along turtles' facing)",         10)
+local TARGET_HEIGHT = readNumber("Target surface height (for reference)",       5)
+
+-- --------------------------------------------------------------------------
+-- Work queue: one entry per column (global x = 0 … WIDTH-1)
+-- --------------------------------------------------------------------------
+local work_queue    = {}
+local in_progress   = {}
+local done_count    = 0
+local turtle_status = {}
+
+for x = 0, WIDTH - 1 do
+    work_queue[#work_queue + 1] = x
 end
 
 print(string.format(
-    "\nJob: flatten %d x %d to height %d, %d turtle(s).",
-    WIDTH, LENGTH, TARGET_HEIGHT, NUM_TURTLES))
-for i, c in ipairs(chunks) do
-    print(string.format("  Chunk %d: width=%d, z_offset=%d", i, c.width, c.z_offset))
-end
-print("\nWaiting for turtles  (protocol: " .. SERVER_PROTOCOL ..
-      "  host: " .. SERVER_HOSTNAME .. ")...")
+    "\nJob: flatten %d × %d to height %d (%d column tasks). Listening…",
+    WIDTH, LENGTH, TARGET_HEIGHT, WIDTH))
 
 -- --------------------------------------------------------------------------
--- Assign tasks to connecting turtles
+-- Monitor refresh
 -- --------------------------------------------------------------------------
-local assigned = 0
-local pending  = {}
-
-while assigned < NUM_TURTLES do
-    local sender, msg = rednet.receive(SERVER_PROTOCOL, 120)
-    if sender == nil then
-        print("Timeout – only " .. assigned .. "/" .. NUM_TURTLES .. " turtle(s) connected.")
-        break
+local function refreshMonitor()
+    if not monitor then return end
+    monitor.clear()
+    local row = 1
+    local function mp(text)
+        monitor.setCursorPos(1, row)
+        monitor.write(tostring(text))
+        row = row + 1
     end
-    if type(msg) == "table" and msg.type == "REQUEST_TASK" and not pending[sender] then
-        assigned        = assigned + 1
-        local chunk     = chunks[assigned]
-        pending[sender] = assigned
-        rednet.send(sender, {
-            type          = "TASK_ASSIGN",
-            width         = chunk.width,
-            length        = LENGTH,
-            target_height = TARGET_HEIGHT,
-            z_offset      = chunk.z_offset,
-        }, SERVER_PROTOCOL)
-        print(string.format(
-            "  Turtle %d → chunk %d (width=%d, z_offset=%d)",
-            sender, assigned, chunk.width, chunk.z_offset))
+    local total_pct = math.floor(done_count * 100 / math.max(1, WIDTH))
+    local bar_w = 26
+    local filled = math.floor(done_count * bar_w / math.max(1, WIDTH))
+    mp("=== Area Flattener ===")
+    mp(string.format("Done: %d/%d cols  %d%%", done_count, WIDTH, total_pct))
+    mp("[" .. string.rep("#", filled) .. string.rep("-", bar_w - filled) .. "]")
+    mp("")
+    for id, st in pairs(turtle_status) do
+        local label = st.idle and "idle" or string.format("%3d%%", st.pct)
+        mp(string.format("T%-4d Fuel:%-6d %s", id, st.fuel, label))
     end
 end
 
 -- --------------------------------------------------------------------------
--- Wait for all turtles to finish
+-- Main event loop
 -- --------------------------------------------------------------------------
-print("All " .. assigned .. " turtle(s) assigned. Waiting for completion...")
-local done = 0
-while done < assigned do
-    local sender, msg = rednet.receive(SERVER_PROTOCOL, 3600)
-    if sender == nil then
-        print("Timeout waiting for turtle completions.")
-        break
-    end
-    if type(msg) == "table" and msg.type == "TASK_DONE" and pending[sender] then
-        done            = done + 1
-        pending[sender] = nil
-        print(string.format(
-            "  Turtle %d finished (%d/%d done).", sender, done, assigned))
+while done_count < WIDTH do
+    local sender, msg = rednet.receive(SERVER_PROTOCOL, 5)
+
+    if sender and type(msg) == "table" then
+
+        if msg.type == "REQUEST_TASK" then
+            if not turtle_status[sender] then
+                turtle_status[sender] = {fuel = 0, pct = 0, idle = false}
+                print("New turtle: " .. sender)
+            end
+            if #work_queue > 0 then
+                local col_x = table.remove(work_queue, 1)
+                in_progress[sender] = col_x
+                turtle_status[sender].pct  = 0
+                turtle_status[sender].idle = false
+                rednet.send(sender, {
+                    type          = "TASK_ASSIGN",
+                    col_x         = col_x,
+                    length        = LENGTH,
+                    target_height = TARGET_HEIGHT,
+                }, SERVER_PROTOCOL)
+                print(string.format(
+                    "  Turtle %d → col %d  (%d left)", sender, col_x, #work_queue))
+            else
+                turtle_status[sender].idle = true
+                rednet.send(sender, {type = "NO_MORE_TASKS"}, SERVER_PROTOCOL)
+                print(string.format("  Turtle %d: no more tasks.", sender))
+            end
+
+        elseif msg.type == "TASK_DONE" then
+            if in_progress[sender] ~= nil then
+                in_progress[sender] = nil
+                done_count = done_count + 1
+                if turtle_status[sender] then
+                    turtle_status[sender].pct  = 100
+                    turtle_status[sender].idle = true
+                end
+                print(string.format(
+                    "  Turtle %d done. (%d/%d)", sender, done_count, WIDTH))
+            end
+
+        elseif msg.type == "STATUS_UPDATE" then
+            if turtle_status[sender] then
+                turtle_status[sender].fuel = msg.fuel or 0
+                turtle_status[sender].pct  = msg.pct  or 0
+                turtle_status[sender].idle = false
+            end
+        end
+
+        refreshMonitor()
+    else
+        refreshMonitor()
     end
 end
 
-if done == assigned then
-    print("Flattening complete!")
-else
-    print(string.format("Partial: %d/%d turtles finished.", done, assigned))
+-- --------------------------------------------------------------------------
+-- Finished
+-- --------------------------------------------------------------------------
+print("Flattening complete!")
+if monitor then
+    monitor.clear()
+    monitor.setCursorPos(1, 1)
+    monitor.write("=== FLATTEN COMPLETE ===")
+    monitor.setCursorPos(1, 2)
+    monitor.write(string.format("%d x %d area done!", WIDTH, LENGTH))
 end
-
 rednet.unhost(SERVER_PROTOCOL)

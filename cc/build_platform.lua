@@ -1,76 +1,50 @@
 -- ComputerCraft: Platform builder – CLIENT
--- Connects to platform_server, receives a column-chunk assignment, and builds it.
+-- Dynamically receives one-column tasks from platform_server.
+-- All building material and lava bucket fuel come from the supply chest placed
+-- directly behind turtle 1's start position (global z = -1, same height).
 --
 -- Setup:
 --   Attach a wireless modem to this turtle.
---   Place ALL turtles at the SAME bottom-left corner of the FULL platform area,
---   ONE BLOCK ABOVE ground, facing along the LENGTH direction.
---   Start platform_server on any computer first, then run this on each turtle.
---   Inventory: slots  1-8  = stone / cobblestone
---              slots  9-16 = dirt
+--   ALL turtles start at the SAME bottom-left corner, one block above ground,
+--   facing along the LENGTH (+z) direction.
+--   Place the supply chest one block behind turtle 1 (at z = -1).
+--   Fill it with stone/cobblestone and lava buckets.
+--   Start platform_server first, then run this on every turtle.
+--   Additional turtles can be added at any time — just start them the same way.
 
 local SERVER_PROTOCOL = "modpack_platform"
 local SERVER_HOSTNAME  = "platform_server"
 
+local FUEL_THRESHOLD = 500    -- go resupply when fuel drops below this
+local FUEL_TARGET    = 10000  -- desired fuel level after resupply
+local MAT_THRESHOLD  = 16     -- go restock when fewer than this many blocks remain
+
 -- --------------------------------------------------------------------------
--- Connect to server and receive task
+-- Connect to server
 -- --------------------------------------------------------------------------
 local modem = peripheral.find("modem")
 if not modem then error("No modem found! Attach a wireless modem.") end
 rednet.open(peripheral.getName(modem))
 
 print("=== Platform Builder Client ===")
-print("Slots  1-8 : stone / cobblestone")
-print("Slots  9-16: dirt")
 print("Looking up server (" .. SERVER_HOSTNAME .. ")...")
 
 local server_id = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
 if not server_id then
-    error("Server not found! Make sure platform_server is running first.")
+    error("Server not found! Start platform_server first.")
 end
-print("Server found (ID " .. server_id .. "). Requesting task...")
-
-rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
-
-local WIDTH, LENGTH, STONE_LAYERS, DIRT_LAYERS, Z_OFFSET
-while true do
-    local sender, msg = rednet.receive(SERVER_PROTOCOL, 30)
-    if sender == nil then error("Timed out waiting for task assignment.") end
-    if sender == server_id and type(msg) == "table" and msg.type == "TASK_ASSIGN" then
-        WIDTH        = msg.width
-        LENGTH       = msg.length
-        STONE_LAYERS = msg.stone_layers
-        DIRT_LAYERS  = msg.dirt_layers
-        Z_OFFSET     = msg.z_offset
-        break
-    end
-end
-
-local TOTAL_LAYERS = STONE_LAYERS + DIRT_LAYERS
-print(string.format(
-    "Task: %d wide x %d long, %d stone + %d dirt, z_offset=%d.",
-    WIDTH, LENGTH, STONE_LAYERS, DIRT_LAYERS, Z_OFFSET))
-
-local STONE_SLOTS, DIRT_SLOTS = {}, {}
-for i = 1,  8 do STONE_SLOTS[#STONE_SLOTS + 1] = i end
-for i = 9, 16 do DIRT_SLOTS[#DIRT_SLOTS  + 1] = i end
+print("Server found (ID " .. server_id .. ").")
 
 -- --------------------------------------------------------------------------
--- Position / heading tracking  (relative to starting position)
+-- Global position / heading tracking
+-- All turtles share the same origin (0, 0, 0).
 -- dir: 0=+z  1=+x  2=-z  3=-x
 -- --------------------------------------------------------------------------
 local px, py, pz = 0, 0, 0
 local pdir = 0
 
-local function turnLeft()
-    turtle.turnLeft()
-    pdir = (pdir + 3) % 4
-end
-
-local function turnRight()
-    turtle.turnRight()
-    pdir = (pdir + 1) % 4
-end
+local function turnLeft()  turtle.turnLeft();  pdir = (pdir + 3) % 4 end
+local function turnRight() turtle.turnRight(); pdir = (pdir + 1) % 4 end
 
 local function face(d)
     local delta = (d - pdir) % 4
@@ -81,10 +55,7 @@ local function face(d)
 end
 
 local function stepForward()
-    while not turtle.forward() do
-        turtle.dig()
-        turtle.attack()
-    end
+    while not turtle.forward() do turtle.dig(); turtle.attack() end
     if     pdir == 0 then pz = pz + 1
     elseif pdir == 1 then px = px + 1
     elseif pdir == 2 then pz = pz - 1
@@ -93,18 +64,12 @@ local function stepForward()
 end
 
 local function stepUp()
-    while not turtle.up() do
-        turtle.digUp()
-        turtle.attackUp()
-    end
+    while not turtle.up() do turtle.digUp(); turtle.attackUp() end
     py = py + 1
 end
 
 local function stepDown()
-    while not turtle.down() do
-        turtle.digDown()
-        turtle.attackDown()
-    end
+    while not turtle.down() do turtle.digDown(); turtle.attackDown() end
     py = py - 1
 end
 
@@ -125,78 +90,153 @@ end
 -- Inventory helpers
 -- --------------------------------------------------------------------------
 
--- Select a slot that contains material; block and prompt if all slots empty.
-local function selectMaterial(slots)
-    while true do
-        for _, slot in ipairs(slots) do
-            if turtle.getItemCount(slot) > 0 then
-                turtle.select(slot)
-                return
-            end
+-- Count non-bucket items (building blocks).
+local function countBuildBlocks()
+    local n = 0
+    for slot = 1, 16 do
+        local item = turtle.getItemDetail(slot)
+        if item and not item.name:find("bucket") then
+            n = n + turtle.getItemCount(slot)
         end
-        print("Out of material! Refill inventory and press Enter to continue.")
-        io.read()
+    end
+    return n
+end
+
+local function findEmptySlot()
+    for slot = 1, 16 do
+        if turtle.getItemCount(slot) == 0 then return slot end
+    end
+    return nil
+end
+
+-- Select a non-bucket slot to place; returns true on success.
+local function selectBuildBlock()
+    for slot = 1, 16 do
+        local item = turtle.getItemDetail(slot)
+        if item and not item.name:find("bucket") and turtle.getItemCount(slot) > 0 then
+            turtle.select(slot)
+            return true
+        end
+    end
+    return false
+end
+
+-- --------------------------------------------------------------------------
+-- Resupply from the supply chest (global 0, 0, -1 — directly behind turtle 1)
+-- Refuels with lava buckets (returns empty bucket to chest).
+-- Restocks building blocks (stone / cobblestone).
+-- --------------------------------------------------------------------------
+local function resupply()
+    local spx, spy, spz, spdir = px, py, pz, pdir
+    print(string.format("Resupply (fuel=%d, blocks=%d)…",
+        turtle.getFuelLevel(), countBuildBlocks()))
+
+    goTo(0, 0, 0)
+    face(2)  -- face -z so the chest at (0, 0, -1) is directly in front
+
+    local loops = 0
+    while (turtle.getFuelLevel() < FUEL_TARGET or countBuildBlocks() < MAT_THRESHOLD)
+          and loops < 64 do
+        local slot = findEmptySlot()
+        if not slot then break end      -- inventory full
+        turtle.select(slot)
+        if not turtle.suck() then break end   -- chest empty or inaccessible
+
+        local item = turtle.getItemDetail(slot)
+        if item and item.name:find("lava_bucket") then
+            turtle.refuel()   -- consumes lava; empty bucket stays in slot
+            turtle.drop()     -- return empty bucket to the chest
+        end
+        -- Stone / cobblestone stays in inventory for building.
+        loops = loops + 1
+    end
+
+    print(string.format("  → fuel=%d, blocks=%d",
+        turtle.getFuelLevel(), countBuildBlocks()))
+    goTo(spx, spy, spz)
+    face(spdir)
+end
+
+local function checkResupply()
+    if turtle.getFuelLevel() < FUEL_THRESHOLD or countBuildBlocks() < MAT_THRESHOLD then
+        resupply()
     end
 end
 
 -- --------------------------------------------------------------------------
--- Layer builder
--- Turtle must already be at (0, layer-1, 0) facing +z before calling.
--- Blocks are placed one below the turtle; the layer's blocks end up at py-1.
+-- Status reporting
 -- --------------------------------------------------------------------------
-local function buildLayer(slots)
-    face(0)  -- ensure correct facing at row start
-    for row = 1, WIDTH do
-        for col = 1, LENGTH do
-            selectMaterial(slots)
+local function sendStatus(pct)
+    rednet.send(server_id, {
+        type = "STATUS_UPDATE",
+        fuel = turtle.getFuelLevel(),
+        pct  = pct,
+    }, SERVER_PROTOCOL)
+end
+
+-- --------------------------------------------------------------------------
+-- Build a single column (1 wide × length long × layers tall).
+-- Turtle navigates to (col_x, 0, 0) then builds each layer upward,
+-- placing blocks below itself in a straight row along +z.
+-- --------------------------------------------------------------------------
+local function buildColumn(col_x, length, layers)
+    local total = length * layers
+    local placed = 0
+
+    for layer = 1, layers do
+        checkResupply()
+        goTo(col_x, layer - 1, 0)
+        face(0)  -- face +z along length
+
+        for z = 1, length do
+            checkResupply()
+            while not selectBuildBlock() do resupply() end
             turtle.placeDown()
-            if col < LENGTH then
-                stepForward()
+            placed = placed + 1
+            if placed % 16 == 0 then
+                sendStatus(math.floor(placed * 100 / total))
             end
+            if z < length then stepForward() end
         end
-        if row < WIDTH then
-            if row % 2 == 1 then
-                turnRight(); stepForward(); turnRight()
-            else
-                turnLeft();  stepForward(); turnLeft()
-            end
-        end
+
+        -- Return to column-start at this height before ascending.
+        goTo(col_x, layer - 1, 0)
+    end
+
+    sendStatus(100)
+end
+
+-- --------------------------------------------------------------------------
+-- Main task loop — keep requesting columns until the server has no more
+-- --------------------------------------------------------------------------
+checkResupply()
+print("Requesting first task…")
+rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
+
+while true do
+    local sender, msg
+    repeat
+        sender, msg = rednet.receive(SERVER_PROTOCOL, 60)
+        if sender == nil then error("Timeout waiting for task from server.") end
+    until sender == server_id and type(msg) == "table"
+
+    if msg.type == "NO_MORE_TASKS" then
+        print("No more tasks. Returning to base.")
+        break
+    end
+
+    if msg.type == "TASK_ASSIGN" then
+        local col_x  = msg.col_x
+        local length = msg.length
+        local layers = msg.layers
+        print(string.format("Col %d: %d × %d blocks.", col_x, length, layers))
+        buildColumn(col_x, length, layers)
+        print(string.format("Col %d done.", col_x))
+        rednet.send(server_id, {type = "TASK_DONE",   col_x = col_x}, SERVER_PROTOCOL)
+        rednet.send(server_id, {type = "REQUEST_TASK"},               SERVER_PROTOCOL)
     end
 end
 
--- --------------------------------------------------------------------------
--- Navigate to this turtle's starting column (z_offset steps to the right)
--- --------------------------------------------------------------------------
-if Z_OFFSET > 0 then
-    face(1)  -- face +x (right when initially facing +z)
-    for _ = 1, Z_OFFSET do stepForward() end
-    face(0)  -- face back along length (+z)
-    px, py, pz = 0, 0, 0  -- reset to local origin
-end
-
--- --------------------------------------------------------------------------
--- Main
--- --------------------------------------------------------------------------
-print(string.format(
-    "Building %d x %d x %d platform (%d stone + %d dirt).",
-    WIDTH, LENGTH, TOTAL_LAYERS, STONE_LAYERS, DIRT_LAYERS))
-
-for layer = 1, TOTAL_LAYERS do
-    local isStone = (layer <= STONE_LAYERS)
-    local slots   = isStone and STONE_SLOTS or DIRT_SLOTS
-    local mat     = isStone and "stone" or "dirt"
-
-    print(string.format("  Layer %d/%d (%s)...", layer, TOTAL_LAYERS, mat))
-
-    -- For layer N the turtle works at py = N-1 (one above the block row).
-    goTo(0, layer - 1, 0)
-    buildLayer(slots)
-
-    -- Return to the start column at the same height before ascending.
-    goTo(0, layer - 1, 0)
-end
-
-print("Section complete!")
-rednet.send(server_id, {type = "TASK_DONE"}, SERVER_PROTOCOL)
-print(string.format(
-    "Done! Turtle is above layer %d of its assigned section.", TOTAL_LAYERS))
+goTo(0, 0, 0)
+face(0)
+print("Done!")
