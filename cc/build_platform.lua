@@ -482,22 +482,35 @@ end
 -- col_x:           0-based column index from the server queue.
 -- layer_materials: array of "stone"/"dirt" per layer (index = layer number).
 -- start_side:      "left" or "right" — which side of origin the work area is on.
--- build_dir:       "up" (layers stack upward) or "down" (layers go deeper).
+-- build_dir:       "up"   — layer 1 at y=0, last layer highest; blocks stack upward.
+--                  "down" — layer 1 is the deepest; last layer ends at y=0 so its
+--                           blocks land at y=-1 (directly below the chest/start).
+--                           The turtle descends first and builds up toward the chest.
 -- --------------------------------------------------------------------------
 local function buildColumn(col_x, length, layer_materials, start_side, build_dir)
     local layers  = #layer_materials
     local gx      = (start_side == "left") and -(col_x + 1) or (col_x + 1)
-    local y_sign  = (build_dir  == "up")   and  1           or -1
     local total   = length * layers
     local placed  = 0
+
+    -- Y position for the turtle when it is about to placeDown() layer `l`.
+    -- "up":   layer 1 → y=0, layer 2 → y=1, …  (stack upward from start level)
+    -- "down": layer 1 → y=-(layers-1) (deepest), last layer → y=0 (below chest)
+    local function layerY(l)
+        if build_dir == "up" then
+            return l - 1
+        else
+            return l - layers
+        end
+    end
 
     for layer = 1, layers do
         local mattype = layer_materials[layer] or "stone"
         checkFuel()
-        print(string.format("  [dbg] col=%d layer=%d/%d mat=%s pos=(%d,%d,%d)",
-            col_x, layer, layers, mattype, px, py, pz))
+        print(string.format("  [dbg] col=%d layer=%d/%d mat=%s y=%d pos=(%d,%d,%d)",
+            col_x, layer, layers, mattype, layerY(layer), px, py, pz))
         setStatus("BUILDING", string.format("Col %d  Layer %d/%d  %s", col_x, layer, layers, mattype))
-        goTo(gx, y_sign * (layer - 1), 0)
+        goTo(gx, layerY(layer), 0)
         face(0)  -- face +z along length
 
         for z = 1, length do
@@ -513,8 +526,8 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
             if z < length then stepForward() end
         end
 
-        -- Return to column-start at this height before ascending/descending.
-        goTo(gx, y_sign * (layer - 1), 0)
+        -- Return to column-start at this height before moving to next layer.
+        goTo(gx, layerY(layer), 0)
     end
 
     sendStatus(100, layers)
