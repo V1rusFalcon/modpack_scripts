@@ -112,6 +112,40 @@ local function tryGrantChest()
 end
 
 -- --------------------------------------------------------------------------
+-- Dead-turtle eviction — run on every loop iteration so that a destroyed
+-- turtle is detected even when other turtles keep sending heartbeats and
+-- the poll-timeout branch never fires.
+-- --------------------------------------------------------------------------
+local function evictDeadTurtles()
+    local now = os.epoch("utc") / 1000
+    local dead = {}
+    for id, _ in pairs(in_progress) do
+        if last_seen[id] == nil or (now - last_seen[id]) > HEARTBEAT_TIMEOUT then
+            dead[#dead + 1] = id
+        end
+    end
+    for _, id in ipairs(dead) do
+        local col_x = in_progress[id]
+        print(string.format("  Turtle %d timed out! Re-queuing col %d.", id, col_x))
+        table.insert(work_queue, 1, col_x)
+        in_progress[id] = nil
+        if turtle_status[id] then
+            turtle_status[id].pct  = 0
+            turtle_status[id].idle = false
+        end
+        -- Release the chest if this dead turtle was holding or waiting for it.
+        if chest_in_use == id then
+            chest_in_use = nil
+            print(string.format("  Turtle %d released chest (timed out).", id))
+            tryGrantChest()
+        end
+        for i = #chest_queue, 1, -1 do
+            if chest_queue[i] == id then table.remove(chest_queue, i) end
+        end
+    end
+end
+
+-- --------------------------------------------------------------------------
 -- Monitor refresh
 -- --------------------------------------------------------------------------
 local function refreshMonitor()
@@ -261,35 +295,11 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
 
         refreshMonitor()
     else
-        -- Poll timeout: check for turtles that have gone silent.
-        local now = os.epoch("utc") / 1000
-        local dead = {}
-        for id, _ in pairs(in_progress) do
-            if last_seen[id] == nil or (now - last_seen[id]) > HEARTBEAT_TIMEOUT then
-                dead[#dead + 1] = id
-            end
-        end
-        for _, id in ipairs(dead) do
-            local col_x = in_progress[id]
-            print(string.format("  Turtle %d timed out! Re-queuing col %d.", id, col_x))
-            table.insert(work_queue, 1, col_x)
-            in_progress[id] = nil
-            if turtle_status[id] then
-                turtle_status[id].pct  = 0
-                turtle_status[id].idle = false
-            end
-            -- Release the chest if this dead turtle was holding or waiting for it.
-            if chest_in_use == id then
-                chest_in_use = nil
-                print(string.format("  Turtle %d released chest (timed out).", id))
-                tryGrantChest()
-            end
-            for i = #chest_queue, 1, -1 do
-                if chest_queue[i] == id then table.remove(chest_queue, i) end
-            end
-        end
+        -- Poll timeout (no message for 5 s) — also a good time to check.
         refreshMonitor()
     end
+    -- Always check for silent turtles, regardless of whether a message arrived.
+    evictDeadTurtles()
 end
 
 -- --------------------------------------------------------------------------
