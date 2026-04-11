@@ -205,13 +205,13 @@ local function resupply()
 
     -- 2. Navigate to the chest.
     goTo(0, 0, 0)
-    face(0)  -- face +z so the chest at (0, 0, 1) is directly in front
+    face(0)  -- face +z; the supply chest at (0, 0, -1) is directly behind
 
     -- 3. Wrap the chest peripheral so we can inspect its full inventory
     --    (works for chests of any size, not just 27 slots).
-    local chest = peripheral.wrap("front")
+    local chest = peripheral.wrap("back")
     if not chest then
-        error("No chest peripheral found in front at (0,0,1)!")
+        error("No chest peripheral found behind at (0,0,-1)!")
     end
     local chest_size = chest.size()
 
@@ -254,11 +254,11 @@ local function resupply()
         else
             -- Something useful is available; pull one stack.
             turtle.select(slot)
-            if turtle.suck() then
+            if turtle.suckBack() then
                 local item = turtle.getItemDetail(slot)
                 if item and item.name:find("lava_bucket") then
-                    turtle.refuel()   -- consumes lava; empty bucket stays in slot
-                    turtle.drop()     -- return empty bucket to the chest
+                    turtle.refuel()      -- consumes lava; empty bucket stays in slot
+                    turtle.dropBack()    -- return empty bucket to the chest
                 end
                 -- Stone / dirt / cobblestone stays in inventory for building.
             end
@@ -268,10 +268,11 @@ local function resupply()
     print(string.format("  → fuel=%d, stone=%d, dirt=%d",
         turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
 
-    -- 4. Step back one block before releasing so the next queued turtle can
-    --    navigate to (0,0,0) without bumping into us.
-    local moved = turtle.back()
-    if moved then pz = pz - 1 end
+    -- 4. Step forward one block before releasing so the next queued turtle can
+    --    navigate to (0,0,0) without bumping into us (stepping back would put
+    --    us into the chest at (0,0,-1)).
+    local moved = turtle.forward()
+    if moved then pz = pz + 1 end
 
     -- 5. Release the chest for the next turtle in the server queue.
     rednet.send(server_id, {type = "CHEST_DONE"}, SERVER_PROTOCOL)
