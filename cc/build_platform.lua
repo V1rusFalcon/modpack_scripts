@@ -18,6 +18,7 @@ local SERVER_HOSTNAME  = "platform_server"
 local FUEL_THRESHOLD  = 1000   -- go resupply when fuel drops below this
 local FUEL_TARGET     = 10000  -- desired fuel level after resupply
 local MAT_THRESHOLD   = 16     -- go restock when fewer than this many blocks remain
+local MAT_TARGET      = 64     -- max blocks of each type to carry (one stack each)
 local HEARTBEAT_EVERY = 8      -- send HEARTBEAT to server every N turtle operations
 
 -- --------------------------------------------------------------------------
@@ -216,6 +217,44 @@ local function selectBlockByType(mattype)
 end
 
 -- --------------------------------------------------------------------------
+-- Drop excess / unwanted items back into the chest the turtle is facing.
+-- Keeps at most MAT_TARGET stone-type and MAT_TARGET dirt-type blocks;
+-- returns everything else (empty buckets, unrecognised items, overstock).
+-- Only call while the turtle is positioned and facing the supply chest.
+-- --------------------------------------------------------------------------
+local function cleanInventory()
+    local stone_kept = 0
+    local dirt_kept  = 0
+    for s = 1, 16 do
+        local item = turtle.getItemDetail(s)
+        if item then
+            local nm  = item.name:lower()
+            local cnt = turtle.getItemCount(s)
+            if matchesMat(nm, STONE_PATTERNS) then
+                local keep = math.max(0, MAT_TARGET - stone_kept)
+                if keep == 0 then
+                    turtle.select(s); turtle.drop()
+                elseif cnt > keep then
+                    turtle.select(s); turtle.drop(cnt - keep)
+                end
+                stone_kept = stone_kept + math.min(cnt, keep)
+            elseif matchesMat(nm, DIRT_PATTERNS) then
+                local keep = math.max(0, MAT_TARGET - dirt_kept)
+                if keep == 0 then
+                    turtle.select(s); turtle.drop()
+                elseif cnt > keep then
+                    turtle.select(s); turtle.drop(cnt - keep)
+                end
+                dirt_kept = dirt_kept + math.min(cnt, keep)
+            else
+                -- Empty bucket, unrecognised item — return to chest.
+                turtle.select(s); turtle.drop()
+            end
+        end
+    end
+end
+
+-- --------------------------------------------------------------------------
 -- Resupply from the supply chest (global 0, 0, +1 — directly in front).
 -- Coordinates exclusive chest access with the server so multiple turtles
 -- do not collide. Blocks until the chest has enough items (waits for a
@@ -258,79 +297,95 @@ local function resupply()
     print("[DBG] chest.size() = " .. tostring(chest_size))
     setStatus("RESUPPLY", "At chest (size=" .. chest_size .. ")")
 
-    -- 4. Pull items. Inspect the chest each pass so we know exactly what is
-    --    available and can print a useful "waiting for X" message rather than
-    --    a generic "chest empty" message.
-    while turtle.getFuelLevel() < FUEL_TARGET or countBuildBlocks() < MAT_THRESHOLD do
-        local slot = findEmptySlot()
-        if not slot then
-            -- Inventory is full. If fuel is also satisfied we are done.
-            if turtle.getFuelLevel() >= FUEL_TARGET then break end
-            -- Fuel still needed but no empty slot: drop one building block back
-            -- into the chest (turtle faces it) to free a slot for a lava bucket.
-            for s = 1, 16 do
-                local item = turtle.getItemDetail(s)
-                if item and not item.name:find("bucket") then
-                    turtle.select(s)
-                    turtle.drop(1)
-                    slot = s
-                    break
-                end
-            end
-            if not slot then break end  -- nothing droppable — give up
-        end
+    -- 4. Pull items selectively: at most one stack of stone, one stack of dirt,
+    --    and as many lava buckets as needed to reach FUEL_TARGET.
+    --    After each suck inspect what arrived and drop it back if unwanted.
+    --    After each refuel call cleanInventory() to shed excess blocks.
+    while turtle.getFuelLevel() < FUEL_TARGET
+          or countBuildBlocks("stone") < MAT_TARGET
+          or countBuildBlocks("dirt")  < MAT_TARGET do
 
-        -- Scan all chest slots (any size) and categorise available items.
+        local need_fuel  = turtle.getFuelLevel() < FUEL_TARGET
+        local need_stone = countBuildBlocks("stone") < MAT_TARGET
+        local need_dirt  = countBuildBlocks("dirt")  < MAT_TARGET
+
+        -- Scan all chest slots and categorise available items.
         local items = chest.list()
         print("[DBG] chest.list() scan:")
-        local has_fuel   = false
-        local has_blocks = false
+        local has_fuel  = false
+        local has_stone = false
+        local has_dirt  = false
         for i = 1, chest_size do
             local it = items[i]
             if it then
                 local nm = it.name:lower()
                 print(string.format("  [DBG]  slot %d: %s x%d", i, it.name, it.count))
-                if nm:find("lava_bucket")                          then has_fuel   = true end
-                if matchesMat(nm, STONE_PATTERNS)
-                or matchesMat(nm, DIRT_PATTERNS)                   then has_blocks = true end
+                if nm:find("lava_bucket")              then has_fuel  = true end
+                if matchesMat(nm, STONE_PATTERNS)      then has_stone = true end
+                if matchesMat(nm, DIRT_PATTERNS)       then has_dirt  = true end
             end
         end
-        print(string.format("[DBG] has_fuel=%s  has_blocks=%s", tostring(has_fuel), tostring(has_blocks)))
+        print(string.format("[DBG] has_fuel=%s has_stone=%s has_dirt=%s",
+            tostring(has_fuel), tostring(has_stone), tostring(has_dirt)))
 
-        local need_fuel   = turtle.getFuelLevel() < FUEL_TARGET
-        local need_blocks = countBuildBlocks()     < MAT_THRESHOLD
+        -- Decide whether the chest holds anything we actually still need.
+        local chest_useful = (need_fuel  and has_fuel)
+                          or (need_stone and has_stone)
+                          or (need_dirt  and has_dirt)
 
-        if (need_fuel and not has_fuel) and (need_blocks and not has_blocks) then
-            print("  Chest has no lava buckets or building blocks — waiting for refill…")
-            setStatus("RESUPPLY", "Waiting: need fuel + blocks")
-            rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
-            os.sleep(3)
-        elseif need_fuel and not has_fuel then
-            print("  No lava buckets in chest — waiting…")
-            setStatus("RESUPPLY", "Waiting: need fuel")
-            rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
-            os.sleep(3)
-        elseif need_blocks and not has_blocks then
-            print("  No building blocks in chest — waiting…")
-            setStatus("RESUPPLY", "Waiting: need blocks")
+        if not chest_useful then
+            -- Nothing useful available; wait for a player to refill the chest.
+            local missing = {}
+            if need_fuel  and not has_fuel  then missing[#missing+1] = "fuel"  end
+            if need_stone and not has_stone then missing[#missing+1] = "stone" end
+            if need_dirt  and not has_dirt  then missing[#missing+1] = "dirt"  end
+            local msg = "Waiting: need " .. table.concat(missing, " + ")
+            print("  " .. msg .. " — waiting for refill…")
+            setStatus("RESUPPLY", msg)
             rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
             os.sleep(3)
         else
-            -- Something useful is available; pull one stack.
+            -- Ensure there is a free slot to receive the pulled item.
+            local slot = findEmptySlot()
+            if not slot then
+                cleanInventory()
+                slot = findEmptySlot()
+            end
+            if not slot then break end  -- inventory totally full after clean — give up
+
             turtle.select(slot)
             local ok = turtle.suck()
             print("[DBG] turtle.suck() = " .. tostring(ok))
             if ok then
                 local item = turtle.getItemDetail(slot)
-                print("[DBG] pulled: " .. (item and (item.name .. " x" .. item.count) or "nil"))
-                setStatus("RESUPPLY", "Pulled: " .. (item and item.name or "?"))
-                if item and item.name:find("lava_bucket") then
-                    turtle.refuel()      -- consumes lava; empty bucket stays in slot
-                    turtle.drop()        -- return empty bucket to the chest
+                if item then
+                    local nm = item.name:lower()
+                    print("[DBG] pulled: " .. item.name .. " x" .. item.count)
+                    setStatus("RESUPPLY", "Pulled: " .. item.name)
+
+                    if nm:find("lava_bucket") then
+                        if need_fuel then
+                            turtle.refuel()   -- consumes lava; empty bucket stays
+                            turtle.drop()     -- return empty bucket to chest
+                            cleanInventory()  -- shed any excess blocks freed up
+                        else
+                            turtle.drop()     -- don't need fuel right now
+                        end
+                    elseif matchesMat(nm, STONE_PATTERNS) then
+                        if not need_stone then
+                            turtle.drop()     -- already have a full stack of stone
+                        end
+                    elseif matchesMat(nm, DIRT_PATTERNS) then
+                        if not need_dirt then
+                            turtle.drop()     -- already have a full stack of dirt
+                        end
+                    else
+                        -- Unrecognised item — return it immediately.
+                        turtle.drop()
+                    end
                 end
-                -- Stone / dirt / cobblestone stays in inventory for building.
             else
-                -- suck failed (chest blocked or item locked) — avoid tight loop.
+                -- suck failed — avoid tight loop.
                 print("[DBG] suck failed — sleeping 1 s before retry")
                 setStatus("RESUPPLY", "suck failed, retrying…")
                 os.sleep(1)
