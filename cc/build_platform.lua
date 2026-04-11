@@ -232,14 +232,14 @@ local function resupply()
 
     -- 2. Navigate to the chest.
     goTo(0, 0, 0)
-    face(0)  -- face +z; the supply chest at (0, 0, -1) is directly behind
+    face(2)  -- face -z so the supply chest at (0, 0, -1) is directly in front
 
     -- 3. Wrap the chest peripheral so we can inspect its full inventory
     --    (works for chests of any size, not just 27 slots).
-    local chest = peripheral.wrap("back")
-    print("[DBG] peripheral.wrap('back') = " .. tostring(chest))
+    local chest = peripheral.wrap("front")
+    print("[DBG] peripheral.wrap('front') = " .. tostring(chest))
     if not chest then
-        error("No chest peripheral found behind at (0,0,-1)!")
+        error("No chest peripheral found in front at (0,0,-1)!")
     end
     local chest_size = chest.size()
     print("[DBG] chest.size() = " .. tostring(chest_size))
@@ -290,21 +290,21 @@ local function resupply()
         else
             -- Something useful is available; pull one stack.
             turtle.select(slot)
-            local ok = turtle.suckBack()
-            print("[DBG] turtle.suckBack() = " .. tostring(ok))
+            local ok = turtle.suck()
+            print("[DBG] turtle.suck() = " .. tostring(ok))
             if ok then
                 local item = turtle.getItemDetail(slot)
                 print("[DBG] pulled: " .. (item and (item.name .. " x" .. item.count) or "nil"))
                 setStatus("RESUPPLY", "Pulled: " .. (item and item.name or "?"))
                 if item and item.name:find("lava_bucket") then
                     turtle.refuel()      -- consumes lava; empty bucket stays in slot
-                    turtle.dropBack()    -- return empty bucket to the chest
+                    turtle.drop()        -- return empty bucket to the chest
                 end
                 -- Stone / dirt / cobblestone stays in inventory for building.
             else
-                -- suckBack failed (chest blocked or item locked) — avoid tight loop.
-                print("[DBG] suckBack failed — sleeping 1 s before retry")
-                setStatus("RESUPPLY", "suckBack failed, retrying…")
+                -- suck failed (chest blocked or item locked) — avoid tight loop.
+                print("[DBG] suck failed — sleeping 1 s before retry")
+                setStatus("RESUPPLY", "suck failed, retrying…")
                 os.sleep(1)
             end
         end
@@ -314,9 +314,10 @@ local function resupply()
         turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
     setStatus("RESUPPLY", string.format("Done — fuel=%d blk=%d", turtle.getFuelLevel(), countBuildBlocks()))
 
-    -- 4. Step forward one block before releasing so the next queued turtle can
-    --    navigate to (0,0,0) without bumping into us (stepping back would put
-    --    us into the chest at (0,0,-1)).
+    -- 4. Step forward (+z) before releasing so the next queued turtle can
+    --    navigate to (0,0,0) without bumping into us (stepping toward -z
+    --    would put us into the chest).
+    face(0)  -- face +z before stepping away
     local moved = turtle.forward()
     if moved then pz = pz + 1 end
 
