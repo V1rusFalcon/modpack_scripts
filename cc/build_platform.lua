@@ -52,12 +52,14 @@ end
 -- --------------------------------------------------------------------------
 -- Connect to server
 -- --------------------------------------------------------------------------
+setStatus("STARTUP", "Finding modem — need wireless to reach server")
 local modem = peripheral.find("modem")
 if not modem then error("No modem found! Attach a wireless modem.") end
 rednet.open(peripheral.getName(modem))
 
 print("=== Platform Builder Client ===")
 print("Looking up server (" .. SERVER_HOSTNAME .. ")...")
+setStatus("STARTUP", "Looking up server — need task coordinator")
 
 local server_id = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
 if not server_id then
@@ -410,8 +412,9 @@ end
 -- Main task loop — keep requesting columns until the server has no more
 -- --------------------------------------------------------------------------
 -- Initial startup: ensure fuel and at least a minimal stock before first task.
-setStatus("STARTUP", "Checking fuel + stock")
+setStatus("STARTUP", "Checking fuel — need >=" .. FUEL_THRESHOLD .. " to begin")
 checkFuel()
+setStatus("STARTUP", "Checking blocks — need >=" .. MAT_THRESHOLD .. " to begin")
 if countBuildBlocks() < MAT_THRESHOLD then resupply() end
 print("Requesting first task…")
 setStatus("IDLE", "Requesting first task")
