@@ -406,26 +406,32 @@ local function resupply()
                 setStatus("RESUPPLY", "Pulled dirt")
             end
 
-            -- Lava buckets (fuel)
+            -- Lava buckets (fuel) — phase 1: pull all needed buckets into turtle slots.
             if need_fuel and has_fuel then
                 for i = 1, chest_size do
                     if turtle.getFuelLevel() >= FUEL_TARGET then break end
                     local it = items[i]
                     if it and it.name:lower():find("lava_bucket") then
                         local slot = findEmptySlot()
-                        if not slot then cleanInventory(); slot = findEmptySlot() end
-                        if not slot then break end
+                        if not slot then break end  -- no room left; refuel what we have
                         local moved = chest.pushItems(turtle_name, i, 1, slot)
                         print(string.format("[DBG] pushItems lava slot %d → turtle slot %d (moved %d)",
                             i, slot, moved))
-                        if moved > 0 then
-                            turtle.select(slot)
+                    end
+                end
+                -- Phase 2: refuel from every lava bucket now in the turtle inventory,
+                -- then return empty (and any excess) buckets back to the chest.
+                for sl = 1, 16 do
+                    local it = turtle.getItemDetail(sl)
+                    if it and it.name:lower():find("lava_bucket") then
+                        turtle.select(sl)
+                        if turtle.getFuelLevel() < FUEL_TARGET then
                             turtle.refuel()
-                            turtle.drop()
-                            cleanInventory()
                             print(string.format("[DBG] refuelled → fuel=%d", turtle.getFuelLevel()))
                             setStatus("RESUPPLY", "Refuelled: fuel=" .. turtle.getFuelLevel())
                         end
+                        turtle.drop()  -- empty bucket (or excess full bucket) back to chest
+                        cleanInventory()
                     end
                 end
             end
@@ -445,15 +451,31 @@ local function resupply()
             end
             print("[DBG] drained " .. drained .. " stacks from chest")
 
+            local rem_fuel = need_fuel
+
             if drained == 0 then
                 print("[DBG] chest empty or suck blocked — sleeping 1 s")
                 os.sleep(1)
             else
-                -- Classify every slot (pre-existing + newly drained) and keep
-                -- up to MAT_TARGET of each type total.  Using a "kept" counter
-                -- (like cleanInventory) rather than a "remaining need" counter
-                -- ensures pre-existing stacks are never dropped when need == 0.
-                local rem_fuel   = need_fuel
+                -- Pass 1: refuel from every lava bucket that was pulled.
+                -- Do this before touching stone/dirt so fuel is consumed first.
+                for sl = 1, 16 do
+                    local item = turtle.getItemDetail(sl)
+                    if item and item.name:lower():find("lava_bucket") then
+                        turtle.select(sl)
+                        if rem_fuel then
+                            turtle.refuel()
+                            rem_fuel = turtle.getFuelLevel() < FUEL_TARGET
+                            print(string.format("[DBG] refuelled → fuel=%d", turtle.getFuelLevel()))
+                            setStatus("RESUPPLY", "Refuelled: fuel=" .. turtle.getFuelLevel())
+                        end
+                        turtle.drop()   -- empty (or unneeded full) bucket back to chest
+                        cleanInventory()
+                    end
+                end
+
+                -- Pass 2: classify stone, dirt and anything else; keep up to
+                -- MAT_TARGET of each, return the rest.
                 local kept_stone = 0
                 local kept_dirt  = 0
                 for sl = 1, 16 do
@@ -462,18 +484,7 @@ local function resupply()
                         local nm  = item.name:lower()
                         local cnt = item.count
                         turtle.select(sl)
-                        if nm:find("lava_bucket") then
-                            if rem_fuel then
-                                turtle.refuel()
-                                turtle.drop()   -- empty bucket back to chest
-                                cleanInventory()
-                                rem_fuel = turtle.getFuelLevel() < FUEL_TARGET
-                                print(string.format("[DBG] refuelled → fuel=%d", turtle.getFuelLevel()))
-                                setStatus("RESUPPLY", "Refuelled: fuel=" .. turtle.getFuelLevel())
-                            else
-                                turtle.drop()
-                            end
-                        elseif matchesMat(nm, STONE_PATTERNS) then
+                        if matchesMat(nm, STONE_PATTERNS) then
                             local keep = math.max(0, MAT_TARGET - kept_stone)
                             if keep == 0 then
                                 turtle.drop()
