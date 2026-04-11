@@ -588,7 +588,9 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
         print(string.format("  [dbg] col=%d layer=%d/%d mat=%s y=%d pos=(%d,%d,%d)",
             col_x, layer, layers, mattype, layerY(layer), px, py, pz))
         setStatus("BUILDING", string.format("Col %d  Layer %d/%d  %s", col_x, layer, layers, mattype))
-        goTo(gx, layerY(layer), 0)
+        -- Start one block further (+z) so z=0 stays clear as a corridor for
+        -- turtles travelling to/from the supply chest at (0,0,-1).
+        goTo(gx, layerY(layer), 1)
         face(0)  -- face +z along length
 
         for z = 1, length do
