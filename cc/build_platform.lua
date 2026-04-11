@@ -263,7 +263,22 @@ local function resupply()
     --    a generic "chest empty" message.
     while turtle.getFuelLevel() < FUEL_TARGET or countBuildBlocks() < MAT_THRESHOLD do
         local slot = findEmptySlot()
-        if not slot then break end      -- inventory full — satisfied
+        if not slot then
+            -- Inventory is full. If fuel is also satisfied we are done.
+            if turtle.getFuelLevel() >= FUEL_TARGET then break end
+            -- Fuel still needed but no empty slot: drop one building block back
+            -- into the chest (turtle faces it) to free a slot for a lava bucket.
+            for s = 1, 16 do
+                local item = turtle.getItemDetail(s)
+                if item and not item.name:find("bucket") then
+                    turtle.select(s)
+                    turtle.drop(1)
+                    slot = s
+                    break
+                end
+            end
+            if not slot then break end  -- nothing droppable — give up
+        end
 
         -- Scan all chest slots (any size) and categorise available items.
         local items = chest.list()
