@@ -29,6 +29,9 @@ if mon then
     mon.clear()
 end
 
+-- Global completion percentage (0-100); updated by sendStatus during building.
+local g_pct = 0
+
 local function setStatus(state, task)
     -- Always print to the terminal as well so it shows in server logs.
     print(string.format("[STATUS] %s | %s", state, task or ""))
@@ -42,6 +45,8 @@ local function setStatus(state, task)
     mon.write("Task:  " .. (task or ""))
     mon.setCursorPos(1, 4)
     mon.write("Fuel:  " .. turtle.getFuelLevel())
+    mon.setCursorPos(1, 5)
+    mon.write("Done:  " .. g_pct .. "%")
 end
 
 -- --------------------------------------------------------------------------
@@ -341,12 +346,18 @@ end
 -- Status reporting
 -- --------------------------------------------------------------------------
 local function sendStatus(pct, layer)
+    g_pct = pct
     rednet.send(server_id, {
         type  = "STATUS_UPDATE",
         fuel  = turtle.getFuelLevel(),
         pct   = pct,
         layer = layer,
     }, SERVER_PROTOCOL)
+    -- Refresh the percentage line on the monitor without a full redraw.
+    if mon then
+        mon.setCursorPos(1, 5)
+        mon.write("Done:  " .. pct .. "%  ")
+    end
 end
 
 -- Remembered from the most recent TASK_ASSIGN (used when parking after NO_MORE_TASKS).
@@ -433,6 +444,7 @@ while true do
         local start_side = msg.start_side      or task_start_side
         local build_dir  = msg.build_dir        or "up"
         task_start_side  = start_side  -- remember for idle-parking
+        g_pct = 0  -- reset progress for the new column task
         print(string.format("Col %d: %d positions × %d layers (%s, %s).",
             col_x, length, #layer_mats, start_side, build_dir))
         setStatus("BUILDING", string.format("Col %d  %d pos × %d layers", col_x, length, #layer_mats))
