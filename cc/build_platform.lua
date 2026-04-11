@@ -449,15 +449,18 @@ local function resupply()
                 print("[DBG] chest empty or suck blocked — sleeping 1 s")
                 os.sleep(1)
             else
-                -- Track remaining needs within this classify pass so excess
-                -- stacks of the same material are returned rather than kept.
-                local rem_stone = need_stone
-                local rem_dirt  = need_dirt
-                local rem_fuel  = need_fuel
+                -- Classify every slot (pre-existing + newly drained) and keep
+                -- up to MAT_TARGET of each type total.  Using a "kept" counter
+                -- (like cleanInventory) rather than a "remaining need" counter
+                -- ensures pre-existing stacks are never dropped when need == 0.
+                local rem_fuel   = need_fuel
+                local kept_stone = 0
+                local kept_dirt  = 0
                 for sl = 1, 16 do
                     local item = turtle.getItemDetail(sl)
                     if item then
-                        local nm = item.name:lower()
+                        local nm  = item.name:lower()
+                        local cnt = item.count
                         turtle.select(sl)
                         if nm:find("lava_bucket") then
                             if rem_fuel then
@@ -471,18 +474,26 @@ local function resupply()
                                 turtle.drop()
                             end
                         elseif matchesMat(nm, STONE_PATTERNS) then
-                            if rem_stone > 0 then
-                                rem_stone = rem_stone - item.count
-                                setStatus("RESUPPLY", "Pulled stone")
-                            else
+                            local keep = math.max(0, MAT_TARGET - kept_stone)
+                            if keep == 0 then
                                 turtle.drop()
+                            elseif cnt > keep then
+                                turtle.drop(cnt - keep)
+                            end
+                            kept_stone = kept_stone + math.min(cnt, keep)
+                            if math.min(cnt, keep) > 0 then
+                                setStatus("RESUPPLY", "Pulled stone")
                             end
                         elseif matchesMat(nm, DIRT_PATTERNS) then
-                            if rem_dirt > 0 then
-                                rem_dirt = rem_dirt - item.count
-                                setStatus("RESUPPLY", "Pulled dirt")
-                            else
+                            local keep = math.max(0, MAT_TARGET - kept_dirt)
+                            if keep == 0 then
                                 turtle.drop()
+                            elseif cnt > keep then
+                                turtle.drop(cnt - keep)
+                            end
+                            kept_dirt = kept_dirt + math.min(cnt, keep)
+                            if math.min(cnt, keep) > 0 then
+                                setStatus("RESUPPLY", "Pulled dirt")
                             end
                         else
                             turtle.drop()  -- unrecognised — return to chest
