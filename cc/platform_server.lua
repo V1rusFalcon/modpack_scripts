@@ -84,7 +84,7 @@ for i = 1, DIRT_LAYERS  do layer_materials[STONE_LAYERS + i] = "dirt" end
 local work_queue       = {}     -- unassigned column x-indices
 local in_progress      = {}     -- [turtle_id] = col_x currently building
 local done_count       = 0
-local turtle_status    = {}     -- [turtle_id] = {fuel, pct, idle}
+local turtle_status    = {}     -- [turtle_id] = {fuel, pct, layer, idle}
 local last_seen        = {}     -- [turtle_id] = os.epoch("utc")/1000 of last message
 local HEARTBEAT_TIMEOUT = 30    -- seconds of silence before a turtle is considered dead
 
@@ -163,7 +163,8 @@ local function refreshMonitor()
         elseif chest_pos[id] then
             col_info = "Q" .. chest_pos[id]
         elseif in_progress[id] ~= nil then
-            col_info = "C" .. tostring(in_progress[id])
+            local lyr = st.layer and ("L" .. st.layer) or ""
+            col_info = "C" .. tostring(in_progress[id]) .. lyr
         else
             col_info = "----"
         end
@@ -186,14 +187,15 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
 
         if msg.type == "REQUEST_TASK" then
             if not turtle_status[sender] then
-                turtle_status[sender] = {fuel = 0, pct = 0, idle = false}
+                turtle_status[sender] = {fuel = 0, pct = 0, layer = nil, idle = false}
                 print("New turtle: " .. sender)
             end
             if #work_queue > 0 then
                 local col_x = table.remove(work_queue, 1)
                 in_progress[sender] = col_x
-                turtle_status[sender].pct  = 0
-                turtle_status[sender].idle = false
+                turtle_status[sender].pct   = 0
+                turtle_status[sender].layer = 1
+                turtle_status[sender].idle  = false
                 rednet.send(sender, {
                     type            = "TASK_ASSIGN",
                     col_x           = col_x,
@@ -216,8 +218,9 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
                 in_progress[sender] = nil
                 done_count = done_count + 1
                 if turtle_status[sender] then
-                    turtle_status[sender].pct  = 100
-                    turtle_status[sender].idle = true
+                    turtle_status[sender].pct   = 100
+                    turtle_status[sender].layer = nil
+                    turtle_status[sender].idle  = true
                 end
                 print(string.format(
                     "  Turtle %d done. (%d/%d)", sender, done_count, WIDTH))
@@ -244,9 +247,10 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
 
         elseif msg.type == "STATUS_UPDATE" then
             if turtle_status[sender] then
-                turtle_status[sender].fuel = msg.fuel or 0
-                turtle_status[sender].pct  = msg.pct  or 0
-                turtle_status[sender].idle = false
+                turtle_status[sender].fuel  = msg.fuel  or 0
+                turtle_status[sender].pct   = msg.pct   or 0
+                turtle_status[sender].layer = msg.layer or turtle_status[sender].layer
+                turtle_status[sender].idle  = false
             end
 
         elseif msg.type == "HEARTBEAT" then

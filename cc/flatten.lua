@@ -91,20 +91,38 @@ local function stepUp()
 end
 
 local function stepDown()
-    while not turtle.down() do turtle.digDown(); turtle.attackDown() end
+    if not turtle.down() then
+        print(string.format("  [dbg] stepDown blocked at (%d,%d,%d) — digging", px, py, pz))
+        while not turtle.down() do turtle.digDown(); turtle.attackDown() end
+    end
     py = py - 1
 end
 
+-- Move X, then Y, then Z — but when descending, move X first so the turtle
+-- leaves any built area before going down (prevents digging own blocks).
 local function goTo(tx, ty, tz)
-    while py < ty do stepUp()   end
-    while py > ty do stepDown() end
-    if px ~= tx then
-        face(px < tx and 1 or 3)
-        while px ~= tx do stepForward() end
-    end
-    if pz ~= tz then
-        face(pz < tz and 0 or 2)
-        while pz ~= tz do stepForward() end
+    if py > ty then
+        -- Descending: step off the column sideways before going down.
+        if px ~= tx then
+            face(px < tx and 1 or 3)
+            while px ~= tx do stepForward() end
+        end
+        while py > ty do stepDown() end
+        if pz ~= tz then
+            face(pz < tz and 0 or 2)
+            while pz ~= tz do stepForward() end
+        end
+    else
+        -- Ascending or level: go up first, then X, then Z.
+        while py < ty do stepUp() end
+        if px ~= tx then
+            face(px < tx and 1 or 3)
+            while px ~= tx do stepForward() end
+        end
+        if pz ~= tz then
+            face(pz < tz and 0 or 2)
+            while pz ~= tz do stepForward() end
+        end
     end
 end
 

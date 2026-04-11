@@ -87,20 +87,39 @@ local function stepUp()
 end
 
 local function stepDown()
-    while not turtle.down() do turtle.digDown(); turtle.attackDown() end
+    if not turtle.down() then
+        print(string.format("  [dbg] stepDown blocked at (%d,%d,%d) — digging", px, py, pz))
+        while not turtle.down() do turtle.digDown(); turtle.attackDown() end
+    end
     py = py - 1
 end
 
+-- Move X, then Y, then Z — but when descending, move X first so the turtle
+-- leaves the built column before going down (prevents digging own blocks).
 local function goTo(tx, ty, tz)
-    while py < ty do stepUp()   end
-    while py > ty do stepDown() end
-    if px ~= tx then
-        face(px < tx and 1 or 3)
-        while px ~= tx do stepForward() end
-    end
-    if pz ~= tz then
-        face(pz < tz and 0 or 2)
-        while pz ~= tz do stepForward() end
+    print(string.format("  [dbg] goTo (%d,%d,%d) → (%d,%d,%d)", px, py, pz, tx, ty, tz))
+    if py > ty then
+        -- Descending: step off the column sideways before going down.
+        if px ~= tx then
+            face(px < tx and 1 or 3)
+            while px ~= tx do stepForward() end
+        end
+        while py > ty do stepDown() end
+        if pz ~= tz then
+            face(pz < tz and 0 or 2)
+            while pz ~= tz do stepForward() end
+        end
+    else
+        -- Ascending or level: go up first (above any blocks), then X, then Z.
+        while py < ty do stepUp() end
+        if px ~= tx then
+            face(px < tx and 1 or 3)
+            while px ~= tx do stepForward() end
+        end
+        if pz ~= tz then
+            face(pz < tz and 0 or 2)
+            while pz ~= tz do stepForward() end
+        end
     end
 end
 
@@ -236,11 +255,12 @@ end
 -- --------------------------------------------------------------------------
 -- Status reporting
 -- --------------------------------------------------------------------------
-local function sendStatus(pct)
+local function sendStatus(pct, layer)
     rednet.send(server_id, {
-        type = "STATUS_UPDATE",
-        fuel = turtle.getFuelLevel(),
-        pct  = pct,
+        type  = "STATUS_UPDATE",
+        fuel  = turtle.getFuelLevel(),
+        pct   = pct,
+        layer = layer,
     }, SERVER_PROTOCOL)
 end
 
@@ -264,6 +284,8 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
     for layer = 1, layers do
         local mattype = layer_materials[layer] or "stone"
         checkFuel()
+        print(string.format("  [dbg] col=%d layer=%d/%d mat=%s pos=(%d,%d,%d)",
+            col_x, layer, layers, mattype, px, py, pz))
         goTo(gx, y_sign * (layer - 1), 0)
         face(0)  -- face +z along length
 
@@ -275,7 +297,7 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
             sendHeartbeat()
             placed = placed + 1
             if placed % 16 == 0 then
-                sendStatus(math.floor(placed * 100 / total))
+                sendStatus(math.floor(placed * 100 / total), layer)
             end
             if z < length then stepForward() end
         end
@@ -284,7 +306,7 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
         goTo(gx, y_sign * (layer - 1), 0)
     end
 
-    sendStatus(100)
+    sendStatus(100, layers)
 end
 
 -- --------------------------------------------------------------------------
