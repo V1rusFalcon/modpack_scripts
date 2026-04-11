@@ -110,8 +110,19 @@ local function face(d)
     end
 end
 
+local function isTurtleBlock(inspectFn)
+    local ok, data = inspectFn()
+    return ok and type(data) == "table" and type(data.name) == "string"
+        and data.name:find("turtle", 1, true) ~= nil
+end
+
 local function stepForward()
-    while not turtle.forward() do turtle.dig(); turtle.attack() end
+    while not turtle.forward() do
+        if isTurtleBlock(turtle.inspect) then
+            error("stepForward: blocked by a turtle — aborting to avoid destroying it")
+        end
+        turtle.dig(); turtle.attack()
+    end
     if     pdir == 0 then pz = pz + 1
     elseif pdir == 1 then px = px + 1
     elseif pdir == 2 then pz = pz - 1
@@ -121,14 +132,24 @@ local function stepForward()
 end
 
 local function stepUp()
-    while not turtle.up() do turtle.digUp(); turtle.attackUp() end
+    while not turtle.up() do
+        if isTurtleBlock(turtle.inspectUp) then
+            error("stepUp: blocked by a turtle — aborting to avoid destroying it")
+        end
+        turtle.digUp(); turtle.attackUp()
+    end
     py = py + 1
 end
 
 local function stepDown()
     if not turtle.down() then
         print(string.format("  [dbg] stepDown blocked at (%d,%d,%d) — digging", px, py, pz))
-        while not turtle.down() do turtle.digDown(); turtle.attackDown() end
+        while not turtle.down() do
+            if isTurtleBlock(turtle.inspectDown) then
+                error("stepDown: blocked by a turtle — aborting to avoid destroying it")
+            end
+            turtle.digDown(); turtle.attackDown()
+        end
     end
     py = py - 1
 end
