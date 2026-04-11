@@ -297,12 +297,25 @@ local function resupply()
     print("[DBG] chest.size() = " .. tostring(chest_size))
     setStatus("RESUPPLY", "At chest (size=" .. chest_size .. ")")
 
-    -- 4. Use chest.pushItems to pull exactly what is needed — by slot and count —
-    --    so the turtle never accidentally receives empty buckets or overstock.
-    --    chest.pushItems(targetName, fromSlot, limit, toSlot) returns the
-    --    number of items actually moved. The turtle's peripheral name is
-    --    "turtle_<id>" as seen by other peripherals on the wired network.
-    local turtle_name = "turtle_" .. os.getComputerID()
+    -- 4. Pull items selectively from the chest.
+    --    Preferred: chest.pushItems(turtle_name, chestSlot, count, turtleSlot)
+    --    — slot-precise, no accidental pulls. Requires the turtle to be visible
+    --    on a wired modem network (peripheral name "turtle_<id>").
+    --    Fallback: turtle.suck() — works with any adjacent chest (wireless-only
+    --    turtles). Sucked items are inspected and dropped back if not needed.
+
+    -- Detect a wired modem; if present, pushItems will work.
+    local turtle_name = nil
+    for _, side in ipairs({"left","right","top","bottom","front","back"}) do
+        if peripheral.getType(side) == "modem" then
+            local m = peripheral.wrap(side)
+            if m and not m.isWireless() then
+                turtle_name = "turtle_" .. os.getComputerID()
+                break
+            end
+        end
+    end
+    print("[DBG] wired network: " .. (turtle_name and ("yes → " .. turtle_name) or "no → using suck fallback"))
 
     -- Loop until all needs are satisfied or we must wait for a player refill.
     while turtle.getFuelLevel() < FUEL_TARGET
@@ -336,19 +349,26 @@ local function resupply()
 
         -- Build a list of what is still missing from the chest.
         local missing = {}
-        if need_fuel  and not has_fuel  then missing[#missing+1] = "fuel"  end
-        if need_stone > 0 and not has_stone then missing[#missing+1] = "stone" end
-        if need_dirt  > 0 and not has_dirt  then missing[#missing+1] = "dirt"  end
+        if need_fuel        and not has_fuel  then missing[#missing+1] = "fuel"  end
+        if need_stone > 0   and not has_stone then missing[#missing+1] = "stone" end
+        if need_dirt  > 0   and not has_dirt  then missing[#missing+1] = "dirt"  end
 
-        if #missing == 3 or (not has_fuel and not has_stone and not has_dirt) then
-            -- Chest has nothing at all we want — wait for a refill.
+        local chest_useful = (need_fuel and has_fuel)
+                          or (need_stone > 0 and has_stone)
+                          or (need_dirt  > 0 and has_dirt)
+
+        if not chest_useful then
+            -- Nothing useful available — wait for a player to refill the chest.
             local msg = "Waiting: need " .. table.concat(missing, " + ")
             print("  " .. msg .. "…")
             setStatus("RESUPPLY", msg)
             rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
             os.sleep(3)
-        else
-            -- ── Stone ────────────────────────────────────────────────────────
+
+        elseif turtle_name then
+            -- ── Wired network path: slot-precise pushItems ────────────────────
+
+            -- Stone
             if need_stone > 0 and has_stone then
                 local remaining = need_stone
                 for i = 1, chest_size do
@@ -367,7 +387,7 @@ local function resupply()
                 setStatus("RESUPPLY", "Pulled stone")
             end
 
-            -- ── Dirt ─────────────────────────────────────────────────────────
+            -- Dirt
             if need_dirt > 0 and has_dirt then
                 local remaining = need_dirt
                 for i = 1, chest_size do
@@ -386,30 +406,73 @@ local function resupply()
                 setStatus("RESUPPLY", "Pulled dirt")
             end
 
-            -- ── Lava buckets (fuel) ───────────────────────────────────────────
+            -- Lava buckets (fuel)
             if need_fuel and has_fuel then
                 for i = 1, chest_size do
                     if turtle.getFuelLevel() >= FUEL_TARGET then break end
                     local it = items[i]
                     if it and it.name:lower():find("lava_bucket") then
                         local slot = findEmptySlot()
-                        if not slot then
-                            cleanInventory()
-                            slot = findEmptySlot()
-                        end
+                        if not slot then cleanInventory(); slot = findEmptySlot() end
                         if not slot then break end
                         local moved = chest.pushItems(turtle_name, i, 1, slot)
                         print(string.format("[DBG] pushItems lava slot %d → turtle slot %d (moved %d)",
                             i, slot, moved))
                         if moved > 0 then
                             turtle.select(slot)
-                            turtle.refuel()           -- lava consumed; empty bucket in slot
-                            turtle.drop()             -- return empty bucket to chest
-                            cleanInventory()          -- drop any overstock freed up
+                            turtle.refuel()
+                            turtle.drop()
+                            cleanInventory()
                             print(string.format("[DBG] refuelled → fuel=%d", turtle.getFuelLevel()))
                             setStatus("RESUPPLY", "Refuelled: fuel=" .. turtle.getFuelLevel())
                         end
                     end
+                end
+            end
+
+        else
+            -- ── No wired network: turtle.suck() fallback ─────────────────────
+            -- suck() pulls from the first occupied chest slot; we classify what
+            -- arrives and keep or return it. One suck per outer loop iteration
+            -- ensures steady progress as long as the chest has useful items.
+            local slot = findEmptySlot()
+            if not slot then cleanInventory(); slot = findEmptySlot() end
+            if slot then
+                turtle.select(slot)
+                if turtle.suck() then
+                    local item = turtle.getItemDetail(slot)
+                    if item then
+                        local nm = item.name:lower()
+                        print("[DBG] suck got: " .. item.name .. " x" .. item.count)
+                        if nm:find("lava_bucket") then
+                            if need_fuel then
+                                turtle.refuel()
+                                turtle.drop()
+                                cleanInventory()
+                                print(string.format("[DBG] refuelled → fuel=%d", turtle.getFuelLevel()))
+                                setStatus("RESUPPLY", "Refuelled: fuel=" .. turtle.getFuelLevel())
+                            else
+                                turtle.drop()  -- don't need fuel yet
+                            end
+                        elseif matchesMat(nm, STONE_PATTERNS) then
+                            if need_stone > 0 then
+                                setStatus("RESUPPLY", "Pulled stone")
+                            else
+                                turtle.drop()  -- already have enough stone
+                            end
+                        elseif matchesMat(nm, DIRT_PATTERNS) then
+                            if need_dirt > 0 then
+                                setStatus("RESUPPLY", "Pulled dirt")
+                            else
+                                turtle.drop()  -- already have enough dirt
+                            end
+                        else
+                            turtle.drop()  -- unrecognised item — return it
+                        end
+                    end
+                else
+                    print("[DBG] suck failed — sleeping 1 s")
+                    os.sleep(1)
                 end
             end
         end
