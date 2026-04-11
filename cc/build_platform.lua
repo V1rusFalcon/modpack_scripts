@@ -21,6 +21,30 @@ local MAT_THRESHOLD   = 16     -- go restock when fewer than this many blocks re
 local HEARTBEAT_EVERY = 8      -- send HEARTBEAT to server every N turtle operations
 
 -- --------------------------------------------------------------------------
+-- Monitor display (optional — attach a monitor to any side of the turtle)
+-- --------------------------------------------------------------------------
+local mon = peripheral.find("monitor")
+if mon then
+    mon.setTextScale(0.5)
+    mon.clear()
+end
+
+local function setStatus(state, task)
+    -- Always print to the terminal as well so it shows in server logs.
+    print(string.format("[STATUS] %s | %s", state, task or ""))
+    if not mon then return end
+    mon.clear()
+    mon.setCursorPos(1, 1)
+    mon.write("Turtle #" .. os.getComputerID())
+    mon.setCursorPos(1, 2)
+    mon.write("State: " .. state)
+    mon.setCursorPos(1, 3)
+    mon.write("Task:  " .. (task or ""))
+    mon.setCursorPos(1, 4)
+    mon.write("Fuel:  " .. turtle.getFuelLevel())
+end
+
+-- --------------------------------------------------------------------------
 -- Connect to server
 -- --------------------------------------------------------------------------
 local modem = peripheral.find("modem")
@@ -188,10 +212,12 @@ local function resupply()
     local spx, spy, spz, spdir = px, py, pz, pdir
     print(string.format("Resupply: requesting chest (fuel=%d, stone=%d, dirt=%d)…",
         turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
+    setStatus("RESUPPLY", "Requesting chest access")
 
     -- 1. Ask the server for exclusive chest access; wait in place until granted.
     rednet.send(server_id, {type = "CHEST_REQUEST"}, SERVER_PROTOCOL)
     print("  Waiting in chest queue…")
+    setStatus("RESUPPLY", "Waiting in chest queue")
     while true do
         local s, m = rednet.receive(SERVER_PROTOCOL, 10)
         if s == nil then
@@ -202,6 +228,7 @@ local function resupply()
         end
     end
     print("  Chest access granted.")
+    setStatus("RESUPPLY", "Navigating to chest")
 
     -- 2. Navigate to the chest.
     goTo(0, 0, 0)
@@ -216,6 +243,7 @@ local function resupply()
     end
     local chest_size = chest.size()
     print("[DBG] chest.size() = " .. tostring(chest_size))
+    setStatus("RESUPPLY", "At chest (size=" .. chest_size .. ")")
 
     -- 4. Pull items. Inspect the chest each pass so we know exactly what is
     --    available and can print a useful "waiting for X" message rather than
@@ -246,14 +274,17 @@ local function resupply()
 
         if (need_fuel and not has_fuel) and (need_blocks and not has_blocks) then
             print("  Chest has no lava buckets or building blocks — waiting for refill…")
+            setStatus("RESUPPLY", "Waiting: need fuel + blocks")
             rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
             os.sleep(3)
         elseif need_fuel and not has_fuel then
             print("  No lava buckets in chest — waiting…")
+            setStatus("RESUPPLY", "Waiting: need fuel")
             rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
             os.sleep(3)
         elseif need_blocks and not has_blocks then
             print("  No building blocks in chest — waiting…")
+            setStatus("RESUPPLY", "Waiting: need blocks")
             rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
             os.sleep(3)
         else
@@ -264,17 +295,24 @@ local function resupply()
             if ok then
                 local item = turtle.getItemDetail(slot)
                 print("[DBG] pulled: " .. (item and (item.name .. " x" .. item.count) or "nil"))
+                setStatus("RESUPPLY", "Pulled: " .. (item and item.name or "?"))
                 if item and item.name:find("lava_bucket") then
                     turtle.refuel()      -- consumes lava; empty bucket stays in slot
                     turtle.dropBack()    -- return empty bucket to the chest
                 end
                 -- Stone / dirt / cobblestone stays in inventory for building.
+            else
+                -- suckBack failed (chest blocked or item locked) — avoid tight loop.
+                print("[DBG] suckBack failed — sleeping 1 s before retry")
+                setStatus("RESUPPLY", "suckBack failed, retrying…")
+                os.sleep(1)
             end
         end
     end
 
     print(string.format("  → fuel=%d, stone=%d, dirt=%d",
         turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
+    setStatus("RESUPPLY", string.format("Done — fuel=%d blk=%d", turtle.getFuelLevel(), countBuildBlocks()))
 
     -- 4. Step forward one block before releasing so the next queued turtle can
     --    navigate to (0,0,0) without bumping into us (stepping back would put
@@ -332,6 +370,7 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
         checkFuel()
         print(string.format("  [dbg] col=%d layer=%d/%d mat=%s pos=(%d,%d,%d)",
             col_x, layer, layers, mattype, px, py, pz))
+        setStatus("BUILDING", string.format("Col %d  Layer %d/%d  %s", col_x, layer, layers, mattype))
         goTo(gx, y_sign * (layer - 1), 0)
         face(0)  -- face +z along length
 
@@ -359,9 +398,11 @@ end
 -- Main task loop — keep requesting columns until the server has no more
 -- --------------------------------------------------------------------------
 -- Initial startup: ensure fuel and at least a minimal stock before first task.
+setStatus("STARTUP", "Checking fuel + stock")
 checkFuel()
 if countBuildBlocks() < MAT_THRESHOLD then resupply() end
 print("Requesting first task…")
+setStatus("IDLE", "Requesting first task")
 rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
 
 while true do
@@ -376,9 +417,11 @@ while true do
         -- and the resupply path stay clear.
         local park_x = (task_start_side == "left") and 1 or -1
         print("No more tasks. Parking on opposite side (x=" .. park_x .. ").")
+        setStatus("DONE", "Parking at x=" .. park_x)
         goTo(park_x, 0, 0)
         face(0)
         print("Parked.")
+        setStatus("DONE", "Parked")
         break
     end
 
@@ -391,11 +434,13 @@ while true do
         task_start_side  = start_side  -- remember for idle-parking
         print(string.format("Col %d: %d positions × %d layers (%s, %s).",
             col_x, length, #layer_mats, start_side, build_dir))
+        setStatus("BUILDING", string.format("Col %d  %d pos × %d layers", col_x, length, #layer_mats))
         buildColumn(col_x, length, layer_mats, start_side, build_dir)
         print(string.format("Col %d done.", col_x))
         rednet.send(server_id, {type = "TASK_DONE", col_x = col_x}, SERVER_PROTOCOL)
         -- Drain inventory across columns: only resupply when material is actually low.
         if countBuildBlocks() < MAT_THRESHOLD then resupply() end
+        setStatus("IDLE", "Requesting next task")
         rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
     end
 end
