@@ -161,36 +161,66 @@ end
 
 -- --------------------------------------------------------------------------
 -- Resupply from the supply chest (global 0, 0, +1 — directly in front).
--- Refuels with lava buckets (empty buckets are left inside the chest).
--- Restocks building blocks (stone, dirt, …).
+-- Coordinates exclusive chest access with the server so multiple turtles
+-- do not collide. Blocks until the chest has enough items (waits for a
+-- player to refill it if necessary).
 -- --------------------------------------------------------------------------
 local function resupply()
     local spx, spy, spz, spdir = px, py, pz, pdir
-    print(string.format("Resupply (fuel=%d, stone=%d, dirt=%d)…",
+    print(string.format("Resupply: requesting chest (fuel=%d, stone=%d, dirt=%d)…",
         turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
 
+    -- 1. Ask the server for exclusive chest access; wait in place until granted.
+    rednet.send(server_id, {type = "CHEST_REQUEST"}, SERVER_PROTOCOL)
+    print("  Waiting in chest queue…")
+    while true do
+        local s, m = rednet.receive(SERVER_PROTOCOL, 10)
+        if s == nil then
+            -- Timeout: re-announce liveness so the server doesn't drop us.
+            rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
+        elseif s == server_id and type(m) == "table" and m.type == "CHEST_GRANT" then
+            break
+        end
+    end
+    print("  Chest access granted.")
+
+    -- 2. Navigate to the chest.
     goTo(0, 0, 0)
     face(0)  -- face +z so the chest at (0, 0, 1) is directly in front
 
-    local loops = 0
-    while (turtle.getFuelLevel() < FUEL_TARGET or countBuildBlocks() < MAT_THRESHOLD)
-          and loops < 64 do
+    -- 3. Pull items. If the chest is empty, sleep and retry indefinitely
+    --    (with periodic heartbeats) until a player refills it.
+    while turtle.getFuelLevel() < FUEL_TARGET or countBuildBlocks() < MAT_THRESHOLD do
         local slot = findEmptySlot()
-        if not slot then break end      -- inventory full
+        if not slot then break end      -- inventory full — satisfied
         turtle.select(slot)
-        if not turtle.suck() then break end   -- chest empty or inaccessible
-
-        local item = turtle.getItemDetail(slot)
-        if item and item.name:find("lava_bucket") then
-            turtle.refuel()   -- consumes lava; empty bucket stays in the slot
-            turtle.drop()     -- return empty bucket to the chest
+        if not turtle.suck() then
+            -- Chest is empty: wait a few seconds then try again.
+            print("  Chest empty, waiting for items…")
+            rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
+            os.sleep(3)
+        else
+            local item = turtle.getItemDetail(slot)
+            if item and item.name:find("lava_bucket") then
+                turtle.refuel()   -- consumes lava; empty bucket stays in the slot
+                turtle.drop()     -- return empty bucket to the chest
+            end
+            -- Stone / dirt / cobblestone stays in inventory for building.
         end
-        -- Stone / dirt / cobblestone stays in inventory for building.
-        loops = loops + 1
     end
 
     print(string.format("  → fuel=%d, stone=%d, dirt=%d",
         turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
+
+    -- 4. Step back one block before releasing so the next queued turtle can
+    --    navigate to (0,0,0) without bumping into us.
+    local moved = turtle.back()
+    if moved then pz = pz - 1 end
+
+    -- 5. Release the chest for the next turtle in the server queue.
+    rednet.send(server_id, {type = "CHEST_DONE"}, SERVER_PROTOCOL)
+
+    -- 6. Return to the original position.
     goTo(spx, spy, spz)
     face(spdir)
 end

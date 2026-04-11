@@ -88,6 +88,10 @@ local turtle_status    = {}     -- [turtle_id] = {fuel, pct, idle}
 local last_seen        = {}     -- [turtle_id] = os.epoch("utc")/1000 of last message
 local HEARTBEAT_TIMEOUT = 30    -- seconds of silence before a turtle is considered dead
 
+-- Chest access queue: only one turtle may use the chest at a time.
+local chest_queue  = {}   -- ordered list of turtle IDs waiting for access
+local chest_in_use = nil  -- turtle ID currently at the chest, or nil
+
 for x = 0, WIDTH - 1 do
     work_queue[#work_queue + 1] = x
 end
@@ -95,6 +99,17 @@ end
 print(string.format(
     "\nJob: %d × %d, %d stone + %d dirt layers (%d col tasks, %s, %s). Listening for turtles…",
     WIDTH, LENGTH, STONE_LAYERS, DIRT_LAYERS, WIDTH, START_SIDE, BUILD_DIR))
+
+-- --------------------------------------------------------------------------
+-- Chest queue helper — grant access to the next waiting turtle if free.
+-- --------------------------------------------------------------------------
+local function tryGrantChest()
+    if chest_in_use == nil and #chest_queue > 0 then
+        chest_in_use = table.remove(chest_queue, 1)
+        rednet.send(chest_in_use, {type = "CHEST_GRANT"}, SERVER_PROTOCOL)
+        print(string.format("  Chest → turtle %d  (%d still waiting)", chest_in_use, #chest_queue))
+    end
+end
 
 -- --------------------------------------------------------------------------
 -- Monitor refresh
@@ -114,7 +129,19 @@ local function refreshMonitor()
     mp("=== Platform Builder ===")
     mp(string.format("Done: %d/%d cols  %d%%", done_count, WIDTH, total_pct))
     mp("[" .. string.rep("#", filled) .. string.rep("-", bar_w - filled) .. "]")
+    -- Chest status line
+    if chest_in_use then
+        local s = "Chest: T" .. chest_in_use
+        if #chest_queue > 0 then s = s .. " (+" .. #chest_queue .. " wait)" end
+        mp(s)
+    else
+        mp("Chest: free")
+    end
     mp("")
+    -- Build a quick lookup: turtle id → chest queue position (0 = in use)
+    local chest_pos = {}
+    if chest_in_use then chest_pos[chest_in_use] = 0 end
+    for i, id in ipairs(chest_queue) do chest_pos[id] = i end
     local now_ts = os.epoch("utc") / 1000
     local any_low_fuel = false
     for id, st in pairs(turtle_status) do
@@ -129,15 +156,28 @@ local function refreshMonitor()
         end
         local fuel_tag = (st.fuel < 1000 and not st.idle) and "!" or " "
         if st.fuel < 1000 and not st.idle then any_low_fuel = true end
-        mp(string.format("T%-4d%s Fuel:%-6d %s", id, fuel_tag, st.fuel, label))
+        -- Task column / chest position tag
+        local col_info
+        if chest_pos[id] == 0 then
+            col_info = "CHEST"
+        elseif chest_pos[id] then
+            col_info = "Q" .. chest_pos[id]
+        elseif in_progress[id] ~= nil then
+            col_info = "C" .. tostring(in_progress[id])
+        else
+            col_info = "----"
+        end
+        mp(string.format("T%-3d%s F:%-5d %-5s %s", id, fuel_tag, st.fuel, col_info, label))
     end
     if any_low_fuel then mp("*** ADD FUEL! ***") end
 end
 
 -- --------------------------------------------------------------------------
 -- Main event loop
+-- Keep running until all columns are done AND the chest queue is fully drained,
+-- so no turtle is left waiting for a CHEST_GRANT after tasks complete.
 -- --------------------------------------------------------------------------
-while done_count < WIDTH do
+while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
     local sender, msg = rednet.receive(SERVER_PROTOCOL, 5)
 
     if sender and type(msg) == "table" then
@@ -183,6 +223,25 @@ while done_count < WIDTH do
                     "  Turtle %d done. (%d/%d)", sender, done_count, WIDTH))
             end
 
+        elseif msg.type == "CHEST_REQUEST" then
+            -- Guard against duplicate entries (e.g. turtle retried the request).
+            local already = (chest_in_use == sender)
+            for _, id in ipairs(chest_queue) do
+                if id == sender then already = true; break end
+            end
+            if not already then
+                chest_queue[#chest_queue + 1] = sender
+                print(string.format("  Turtle %d: chest request (queue: %d)", sender, #chest_queue))
+                tryGrantChest()
+            end
+
+        elseif msg.type == "CHEST_DONE" then
+            if chest_in_use == sender then
+                chest_in_use = nil
+                print(string.format("  Turtle %d: chest done.", sender))
+                tryGrantChest()
+            end
+
         elseif msg.type == "STATUS_UPDATE" then
             if turtle_status[sender] then
                 turtle_status[sender].fuel = msg.fuel or 0
@@ -214,6 +273,15 @@ while done_count < WIDTH do
             if turtle_status[id] then
                 turtle_status[id].pct  = 0
                 turtle_status[id].idle = false
+            end
+            -- Release the chest if this dead turtle was holding or waiting for it.
+            if chest_in_use == id then
+                chest_in_use = nil
+                print(string.format("  Turtle %d released chest (timed out).", id))
+                tryGrantChest()
+            end
+            for i = #chest_queue, 1, -1 do
+                if chest_queue[i] == id then table.remove(chest_queue, i) end
             end
         end
         refreshMonitor()
