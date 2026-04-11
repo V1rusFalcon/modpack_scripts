@@ -372,7 +372,21 @@ end
 local task_start_side = "left"
 
 -- --------------------------------------------------------------------------
--- Build a single column (1 wide × length long × #layers tall).
+-- Park the turtle in the designated park zone.
+-- The park zone is one block on the opposite side of the work area at the
+-- origin height so the turtle stays clear of the chest path and other turtles.
+-- --------------------------------------------------------------------------
+local function parkTurtle()
+    -- Opposite side of the work area avoids blocking the chest path.
+    local park_x = (task_start_side == "left") and 1 or -1
+    print(string.format("All tasks done. Moving to park zone (x=%d).", park_x))
+    setStatus("PARKING", string.format("Going to park zone x=%d", park_x))
+    goTo(park_x, 0, 0)
+    face(0)  -- face +z (original start direction)
+    print("Parked.")
+    setStatus("PARKED", string.format("Park zone x=%d", park_x))
+end
+
 -- col_x:           0-based column index from the server queue.
 -- layer_materials: array of "stone"/"dirt" per layer (index = layer number).
 -- start_side:      "left" or "right" — which side of origin the work area is on.
@@ -434,15 +448,7 @@ while true do
     until sender == server_id and type(msg) == "table"
 
     if msg.type == "NO_MORE_TASKS" then
-        -- Park one block on the opposite side of the work area so other turtles
-        -- and the resupply path stay clear.
-        local park_x = (task_start_side == "left") and 1 or -1
-        print("No more tasks. Parking on opposite side (x=" .. park_x .. ").")
-        setStatus("DONE", "Parking at x=" .. park_x)
-        goTo(park_x, 0, 0)
-        face(0)
-        print("Parked.")
-        setStatus("DONE", "Parked")
+        parkTurtle()
         break
     end
 
