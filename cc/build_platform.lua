@@ -210,10 +210,12 @@ local function resupply()
     -- 3. Wrap the chest peripheral so we can inspect its full inventory
     --    (works for chests of any size, not just 27 slots).
     local chest = peripheral.wrap("back")
+    print("[DBG] peripheral.wrap('back') = " .. tostring(chest))
     if not chest then
         error("No chest peripheral found behind at (0,0,-1)!")
     end
     local chest_size = chest.size()
+    print("[DBG] chest.size() = " .. tostring(chest_size))
 
     -- 4. Pull items. Inspect the chest each pass so we know exactly what is
     --    available and can print a useful "waiting for X" message rather than
@@ -224,17 +226,20 @@ local function resupply()
 
         -- Scan all chest slots (any size) and categorise available items.
         local items = chest.list()
+        print("[DBG] chest.list() scan:")
         local has_fuel   = false
         local has_blocks = false
         for i = 1, chest_size do
             local it = items[i]
             if it then
                 local nm = it.name:lower()
+                print(string.format("  [DBG]  slot %d: %s x%d", i, it.name, it.count))
                 if nm:find("lava_bucket")                          then has_fuel   = true end
                 if matchesMat(nm, STONE_PATTERNS)
                 or matchesMat(nm, DIRT_PATTERNS)                   then has_blocks = true end
             end
         end
+        print(string.format("[DBG] has_fuel=%s  has_blocks=%s", tostring(has_fuel), tostring(has_blocks)))
 
         local need_fuel   = turtle.getFuelLevel() < FUEL_TARGET
         local need_blocks = countBuildBlocks()     < MAT_THRESHOLD
@@ -254,8 +259,11 @@ local function resupply()
         else
             -- Something useful is available; pull one stack.
             turtle.select(slot)
-            if turtle.suckBack() then
+            local ok = turtle.suckBack()
+            print("[DBG] turtle.suckBack() = " .. tostring(ok))
+            if ok then
                 local item = turtle.getItemDetail(slot)
+                print("[DBG] pulled: " .. (item and (item.name .. " x" .. item.count) or "nil"))
                 if item and item.name:find("lava_bucket") then
                     turtle.refuel()      -- consumes lava; empty bucket stays in slot
                     turtle.dropBack()    -- return empty bucket to the chest
