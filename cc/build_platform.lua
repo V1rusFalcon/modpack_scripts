@@ -18,7 +18,8 @@ local SERVER_HOSTNAME  = "platform_server"
 local FUEL_THRESHOLD  = 1000   -- go resupply when fuel drops below this
 local FUEL_TARGET     = 10000  -- desired fuel level after resupply
 local MAT_THRESHOLD   = 16     -- go restock when fewer than this many blocks remain
-local MAT_TARGET      = 64     -- max blocks of each type to carry (one stack each)
+local STONE_TARGET    = 192    -- max cobblestone/stone to carry (3 stacks)
+local DIRT_TARGET     = 128    -- max dirt to carry (2 stacks)
 local HEARTBEAT_EVERY = 8      -- send HEARTBEAT to server every N turtle operations
 
 -- --------------------------------------------------------------------------
@@ -218,7 +219,7 @@ end
 
 -- --------------------------------------------------------------------------
 -- Drop excess / unwanted items back into the chest the turtle is facing.
--- Keeps at most MAT_TARGET stone-type and MAT_TARGET dirt-type blocks;
+-- Keeps at most STONE_TARGET stone-type and DIRT_TARGET dirt-type blocks;
 -- returns everything else (empty buckets, unrecognised items, overstock).
 -- Only call while the turtle is positioned and facing the supply chest.
 -- --------------------------------------------------------------------------
@@ -231,7 +232,7 @@ local function cleanInventory()
             local nm  = item.name:lower()
             local cnt = turtle.getItemCount(s)
             if matchesMat(nm, STONE_PATTERNS) then
-                local keep = math.max(0, MAT_TARGET - stone_kept)
+                local keep = math.max(0, STONE_TARGET - stone_kept)
                 if keep == 0 then
                     turtle.select(s); turtle.drop()
                 elseif cnt > keep then
@@ -239,7 +240,7 @@ local function cleanInventory()
                 end
                 stone_kept = stone_kept + math.min(cnt, keep)
             elseif matchesMat(nm, DIRT_PATTERNS) then
-                local keep = math.max(0, MAT_TARGET - dirt_kept)
+                local keep = math.max(0, DIRT_TARGET - dirt_kept)
                 if keep == 0 then
                     turtle.select(s); turtle.drop()
                 elseif cnt > keep then
@@ -319,12 +320,12 @@ local function resupply()
 
     -- Loop until all needs are satisfied or we must wait for a player refill.
     while turtle.getFuelLevel() < FUEL_TARGET
-          or countBuildBlocks("stone") < MAT_TARGET
-          or countBuildBlocks("dirt")  < MAT_TARGET do
+          or countBuildBlocks("stone") < STONE_TARGET
+          or countBuildBlocks("dirt")  < DIRT_TARGET do
 
         local need_fuel  = turtle.getFuelLevel() < FUEL_TARGET
-        local need_stone = MAT_TARGET - countBuildBlocks("stone")
-        local need_dirt  = MAT_TARGET - countBuildBlocks("dirt")
+        local need_stone = STONE_TARGET - countBuildBlocks("stone")
+        local need_dirt  = DIRT_TARGET  - countBuildBlocks("dirt")
 
         -- Snapshot the chest once per outer iteration.
         local items      = chest.list()
@@ -475,7 +476,7 @@ local function resupply()
                 end
 
                 -- Pass 2: classify stone, dirt and anything else; keep up to
-                -- MAT_TARGET of each, return the rest.
+                -- targets of each, return the rest.
                 local kept_stone = 0
                 local kept_dirt  = 0
                 for sl = 1, 16 do
@@ -485,7 +486,7 @@ local function resupply()
                         local cnt = item.count
                         turtle.select(sl)
                         if matchesMat(nm, STONE_PATTERNS) then
-                            local keep = math.max(0, MAT_TARGET - kept_stone)
+                            local keep = math.max(0, STONE_TARGET - kept_stone)
                             if keep == 0 then
                                 turtle.drop()
                             elseif cnt > keep then
@@ -496,7 +497,7 @@ local function resupply()
                                 setStatus("RESUPPLY", "Pulled stone")
                             end
                         elseif matchesMat(nm, DIRT_PATTERNS) then
-                            local keep = math.max(0, MAT_TARGET - kept_dirt)
+                            local keep = math.max(0, DIRT_TARGET - kept_dirt)
                             if keep == 0 then
                                 turtle.drop()
                             elseif cnt > keep then
