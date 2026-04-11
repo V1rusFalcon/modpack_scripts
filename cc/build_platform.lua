@@ -67,6 +67,12 @@ if not server_id then
 end
 print("Server found (ID " .. server_id .. ").")
 
+-- Notify the server to clear any memorised state from a previous run of
+-- this turtle (e.g. after a crash or manual reset).
+setStatus("STARTUP", "Resetting server state — clearing previous run")
+rednet.send(server_id, {type = "RESET"}, SERVER_PROTOCOL)
+print("Server state reset sent.")
+
 -- --------------------------------------------------------------------------
 -- Heartbeat
 -- Sent every HEARTBEAT_EVERY turtle operations so the server can detect
