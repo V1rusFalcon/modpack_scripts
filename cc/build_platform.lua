@@ -207,24 +207,61 @@ local function resupply()
     goTo(0, 0, 0)
     face(0)  -- face +z so the chest at (0, 0, 1) is directly in front
 
-    -- 3. Pull items. If the chest is empty, sleep and retry indefinitely
-    --    (with periodic heartbeats) until a player refills it.
+    -- 3. Wrap the chest peripheral so we can inspect its full inventory
+    --    (works for chests of any size, not just 27 slots).
+    local chest = peripheral.wrap("front")
+    if not chest then
+        error("No chest peripheral found in front at (0,0,1)!")
+    end
+    local chest_size = chest.size()
+
+    -- 4. Pull items. Inspect the chest each pass so we know exactly what is
+    --    available and can print a useful "waiting for X" message rather than
+    --    a generic "chest empty" message.
     while turtle.getFuelLevel() < FUEL_TARGET or countBuildBlocks() < MAT_THRESHOLD do
         local slot = findEmptySlot()
         if not slot then break end      -- inventory full — satisfied
-        turtle.select(slot)
-        if not turtle.suck() then
-            -- Chest is empty: wait a few seconds then try again.
-            print("  Chest empty, waiting for items…")
+
+        -- Scan all chest slots (any size) and categorise available items.
+        local items = chest.list()
+        local has_fuel   = false
+        local has_blocks = false
+        for i = 1, chest_size do
+            local it = items[i]
+            if it then
+                local nm = it.name:lower()
+                if nm:find("lava_bucket")                          then has_fuel   = true end
+                if matchesMat(nm, STONE_PATTERNS)
+                or matchesMat(nm, DIRT_PATTERNS)                   then has_blocks = true end
+            end
+        end
+
+        local need_fuel   = turtle.getFuelLevel() < FUEL_TARGET
+        local need_blocks = countBuildBlocks()     < MAT_THRESHOLD
+
+        if (need_fuel and not has_fuel) and (need_blocks and not has_blocks) then
+            print("  Chest has no lava buckets or building blocks — waiting for refill…")
+            rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
+            os.sleep(3)
+        elseif need_fuel and not has_fuel then
+            print("  No lava buckets in chest — waiting…")
+            rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
+            os.sleep(3)
+        elseif need_blocks and not has_blocks then
+            print("  No building blocks in chest — waiting…")
             rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
             os.sleep(3)
         else
-            local item = turtle.getItemDetail(slot)
-            if item and item.name:find("lava_bucket") then
-                turtle.refuel()   -- consumes lava; empty bucket stays in the slot
-                turtle.drop()     -- return empty bucket to the chest
+            -- Something useful is available; pull one stack.
+            turtle.select(slot)
+            if turtle.suck() then
+                local item = turtle.getItemDetail(slot)
+                if item and item.name:find("lava_bucket") then
+                    turtle.refuel()   -- consumes lava; empty bucket stays in slot
+                    turtle.drop()     -- return empty bucket to the chest
+                end
+                -- Stone / dirt / cobblestone stays in inventory for building.
             end
-            -- Stone / dirt / cobblestone stays in inventory for building.
         end
     end
 
