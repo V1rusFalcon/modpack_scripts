@@ -431,48 +431,63 @@ local function resupply()
             end
 
         else
-            -- ── No wired network: turtle.suck() fallback ─────────────────────
-            -- suck() pulls from the first occupied chest slot; we classify what
-            -- arrives and keep or return it. One suck per outer loop iteration
-            -- ensures steady progress as long as the chest has useful items.
-            local slot = findEmptySlot()
-            if not slot then cleanInventory(); slot = findEmptySlot() end
-            if slot then
-                turtle.select(slot)
-                if turtle.suck() then
-                    local item = turtle.getItemDetail(slot)
+            -- ── No wired network: drain-and-classify fallback ────────────────
+            -- turtle.suck() always pulls from chest slot 1. If that slot holds
+            -- an item not currently needed, a single suck+forward-drop creates
+            -- an infinite loop (the item lands right back in the chest).
+            -- Fix: drain the entire accessible face in one pass, keep what is
+            -- needed, then return the rest — so unwanted items are never
+            -- re-sucked on the very next iteration.
+            local drained = 0
+            while findEmptySlot() do
+                if not turtle.suck() then break end
+                drained = drained + 1
+            end
+            print("[DBG] drained " .. drained .. " stacks from chest")
+
+            if drained == 0 then
+                print("[DBG] chest empty or suck blocked — sleeping 1 s")
+                os.sleep(1)
+            else
+                -- Track remaining needs within this classify pass so excess
+                -- stacks of the same material are returned rather than kept.
+                local rem_stone = need_stone
+                local rem_dirt  = need_dirt
+                local rem_fuel  = need_fuel
+                for sl = 1, 16 do
+                    local item = turtle.getItemDetail(sl)
                     if item then
                         local nm = item.name:lower()
-                        print("[DBG] suck got: " .. item.name .. " x" .. item.count)
+                        turtle.select(sl)
                         if nm:find("lava_bucket") then
-                            if need_fuel then
+                            if rem_fuel then
                                 turtle.refuel()
-                                turtle.drop()
+                                turtle.drop()   -- empty bucket back to chest
                                 cleanInventory()
+                                rem_fuel = turtle.getFuelLevel() < FUEL_TARGET
                                 print(string.format("[DBG] refuelled → fuel=%d", turtle.getFuelLevel()))
                                 setStatus("RESUPPLY", "Refuelled: fuel=" .. turtle.getFuelLevel())
                             else
-                                turtle.drop()  -- don't need fuel yet
+                                turtle.drop()
                             end
                         elseif matchesMat(nm, STONE_PATTERNS) then
-                            if need_stone > 0 then
+                            if rem_stone > 0 then
+                                rem_stone = rem_stone - item.count
                                 setStatus("RESUPPLY", "Pulled stone")
                             else
-                                turtle.drop()  -- already have enough stone
+                                turtle.drop()
                             end
                         elseif matchesMat(nm, DIRT_PATTERNS) then
-                            if need_dirt > 0 then
+                            if rem_dirt > 0 then
+                                rem_dirt = rem_dirt - item.count
                                 setStatus("RESUPPLY", "Pulled dirt")
                             else
-                                turtle.drop()  -- already have enough dirt
+                                turtle.drop()
                             end
                         else
-                            turtle.drop()  -- unrecognised item — return it
+                            turtle.drop()  -- unrecognised — return to chest
                         end
                     end
-                else
-                    print("[DBG] suck failed — sleeping 1 s")
-                    os.sleep(1)
                 end
             end
         end
