@@ -23,6 +23,7 @@ local DIRT_TARGET     = 128    -- max dirt to carry (2 stacks)
 local HEARTBEAT_EVERY       = 8   -- send HEARTBEAT to server every N turtle operations
 local CONNECT_RETRY_SECS    = 5   -- seconds between server lookup retries
 local DEADLOCK_BREAK_AFTER  = 5   -- retries before attempting an up-and-over deadlock break
+local OFFLINE_TURTLE_BREAKS = 5   -- deadlock-break cycles before declaring a turtle offline
 
 -- --------------------------------------------------------------------------
 -- Monitor display (optional — attach a monitor to any side of the turtle)
@@ -37,6 +38,8 @@ end
 local g_pct = 0
 -- Column currently being built (nil between tasks or before first task).
 local g_current_col_x = nil
+-- Set to true when an offline turtle is dug up and needs to be returned to chest.
+local g_offline_turtle_collected = false
 
 local function setStatus(state, task)
     -- Always print to the terminal as well so it shows in server logs.
@@ -155,7 +158,12 @@ local function digIfKelp(inspectFn, digFn)
     end
 end
 
-local function waitForTurtle(label)
+-- inspectFn / digFn are the direction-specific inspect and dig functions for the
+-- move being attempted.  When provided and the blocking turtle has survived
+-- OFFLINE_TURTLE_BREAKS deadlock-break cycles without moving, it is treated as
+-- offline: dug up (collected as an item) and g_offline_turtle_collected is set
+-- so the caller can return it to the chest at the next safe opportunity.
+local function waitForTurtle(label, inspectFn, digFn)
     local retries        = 0
     local deadlock_breaks = 0
     return function()
@@ -167,27 +175,44 @@ local function waitForTurtle(label)
             x    = px, y = py, z = pz,
             dir  = pdir,
         }, SERVER_PROTOCOL)
-        -- After DEADLOCK_BREAK_AFTER consecutive retries (up to 3 times total),
-        -- step up one block to yield the path so a face-to-face pair can resolve.
-        if retries % DEADLOCK_BREAK_AFTER == 0 and deadlock_breaks < 3 then
+        if retries % DEADLOCK_BREAK_AFTER == 0 then
             deadlock_breaks = deadlock_breaks + 1
-            print(string.format("  [nav] deadlock suspected (break #%d) — stepping up to yield path",
-                deadlock_breaks))
-            if turtle.up() then
-                py = py + 1
-                os.sleep(TURTLE_WAIT_SECS * 2)  -- give the other turtle time to move
-                -- Come back down.
-                local moved_down = false
-                for _ = 1, 5 do
-                    if turtle.down() then py = py - 1; moved_down = true; break end
-                    if isTurtleBlock(turtle.inspectDown) then
-                        os.sleep(TURTLE_WAIT_SECS)
-                    else
-                        digIfKelp(turtle.inspectDown, turtle.digDown); turtle.attackDown()
+
+            -- After enough failed deadlock-break cycles the blocking turtle has
+            -- not moved — it is likely offline/abandoned.  Break it and flag for
+            -- chest return so the current task can resume.
+            if inspectFn and digFn and deadlock_breaks >= OFFLINE_TURTLE_BREAKS
+                    and isTurtleBlock(inspectFn) then
+                print(string.format(
+                    "  [nav] %s: turtle offline after %d break cycles — breaking it",
+                    label, deadlock_breaks))
+                setStatus("NAV", "Breaking offline turtle")
+                digFn()
+                g_offline_turtle_collected = true
+                retries = 0
+                return
+            end
+
+            -- Step up one block to yield the path (first 3 cycles only).
+            if deadlock_breaks <= 3 then
+                print(string.format("  [nav] deadlock suspected (break #%d) — stepping up to yield path",
+                    deadlock_breaks))
+                if turtle.up() then
+                    py = py + 1
+                    os.sleep(TURTLE_WAIT_SECS * 2)  -- give the other turtle time to move
+                    -- Come back down.
+                    local moved_down = false
+                    for _ = 1, 5 do
+                        if turtle.down() then py = py - 1; moved_down = true; break end
+                        if isTurtleBlock(turtle.inspectDown) then
+                            os.sleep(TURTLE_WAIT_SECS)
+                        else
+                            digIfKelp(turtle.inspectDown, turtle.digDown); turtle.attackDown()
+                        end
                     end
-                end
-                if not moved_down then
-                    print("  [nav] could not descend after deadlock break — goTo will correct")
+                    if not moved_down then
+                        print("  [nav] could not descend after deadlock break — goTo will correct")
+                    end
                 end
             end
             retries = 0  -- reset so we keep trying without limit
@@ -198,7 +223,7 @@ local function waitForTurtle(label)
 end
 
 local function stepForward()
-    local onBlocked = waitForTurtle("stepForward")
+    local onBlocked = waitForTurtle("stepForward", turtle.inspect, turtle.dig)
     while not turtle.forward() do
         if isTurtleBlock(turtle.inspect) then
             onBlocked()
@@ -215,7 +240,7 @@ local function stepForward()
 end
 
 local function stepUp()
-    local onBlocked = waitForTurtle("stepUp")
+    local onBlocked = waitForTurtle("stepUp", turtle.inspectUp, turtle.digUp)
     while not turtle.up() do
         if isTurtleBlock(turtle.inspectUp) then
             onBlocked()
@@ -229,7 +254,7 @@ end
 local function stepDown()
     if not turtle.down() then
         print(string.format("  [dbg] stepDown blocked at (%d,%d,%d) — digging", px, py, pz))
-        local onBlocked = waitForTurtle("stepDown")
+        local onBlocked = waitForTurtle("stepDown", turtle.inspectDown, turtle.digDown)
         while not turtle.down() do
             if isTurtleBlock(turtle.inspectDown) then
                 onBlocked()
