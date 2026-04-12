@@ -31,6 +31,17 @@ local function readNumber(prompt, default)
     end
 end
 
+local function readNonNegInt(prompt, default)
+    while true do
+        io.write(prompt .. " [" .. tostring(default) .. "]: ")
+        local line = io.read()
+        if line == nil or line == "" then return default end
+        local n = tonumber(line)
+        if n and n >= 0 and math.floor(n) == n then return math.floor(n) end
+        print("Please enter 0 or a positive whole number.")
+    end
+end
+
 local function readChoice(prompt, choices, default)
     while true do
         io.write(prompt .. " [" .. table.concat(choices, "/") .. "] (" .. default .. "): ")
@@ -152,7 +163,14 @@ if saved then
         "Resumed: %d cols done, %d in queue (including %d re-queued).",
         done_count, #work_queue, #saved.in_progress))
 else
-    for x = 0, WIDTH - 1 do
+    local skip = readNonNegInt(
+        string.format("Columns already built (0-%d, skip from x=0)", WIDTH - 1), 0)
+    if skip > 0 then
+        skip = math.min(skip, WIDTH)
+        done_count = skip
+        print(string.format("  Skipping first %d column(s) (x=0..%d).", skip, skip - 1))
+    end
+    for x = skip, WIDTH - 1 do
         work_queue[#work_queue + 1] = x
     end
 end
