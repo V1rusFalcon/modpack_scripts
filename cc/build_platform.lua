@@ -239,6 +239,24 @@ local function selectBlockByType(mattype)
 end
 
 -- --------------------------------------------------------------------------
+-- Burn any fuel items already sitting in the turtle's inventory.
+-- Called before navigating to the chest so nothing useful gets dropped.
+-- --------------------------------------------------------------------------
+local function refuelFromInventory()
+    if turtle.getFuelLevel() >= FUEL_TARGET then return end
+    for s = 1, 16 do
+        if turtle.getFuelLevel() >= FUEL_TARGET then break end
+        turtle.select(s)
+        if turtle.refuel(0) then   -- dry-run: true only if item is combustible
+            turtle.refuel()
+            print(string.format("[DBG] refuelled from inv slot %d → fuel=%d", s, turtle.getFuelLevel()))
+            setStatus("RESUPPLY", "Refuelled from inventory: fuel=" .. turtle.getFuelLevel())
+        end
+    end
+    turtle.select(1)
+end
+
+-- --------------------------------------------------------------------------
 -- Drop excess / unwanted items back into the chest the turtle is facing.
 -- Keeps at most STONE_TARGET stone-type and DIRT_TARGET dirt-type blocks;
 -- returns everything else (empty buckets, unrecognised items, overstock).
@@ -284,6 +302,8 @@ end
 -- --------------------------------------------------------------------------
 local function resupply()
     local spx, spy, spz, spdir = px, py, pz, pdir
+    -- 0. Burn any fuel items already in inventory before going to the chest.
+    refuelFromInventory()
     print(string.format("Resupply: requesting chest (fuel=%d, stone=%d, dirt=%d)…",
         turtle.getFuelLevel(), countBuildBlocks("stone"), countBuildBlocks("dirt")))
     setStatus("RESUPPLY", "Requesting chest access")
