@@ -142,6 +142,19 @@ end
 
 local TURTLE_WAIT_SECS   = 2
 
+-- Dig the block in the given direction only if it is kelp; otherwise sleep
+-- briefly and let the caller retry.  turtle.attack* calls are kept separately
+-- to clear mobs without touching solid blocks.
+local function digIfKelp(inspectFn, digFn)
+    local ok, data = inspectFn()
+    if ok and type(data) == "table" and type(data.name) == "string"
+            and data.name:find("kelp", 1, true) then
+        digFn()
+    else
+        os.sleep(TURTLE_WAIT_SECS)
+    end
+end
+
 local function waitForTurtle(label)
     local retries        = 0
     local deadlock_breaks = 0
@@ -170,7 +183,7 @@ local function waitForTurtle(label)
                     if isTurtleBlock(turtle.inspectDown) then
                         os.sleep(TURTLE_WAIT_SECS)
                     else
-                        turtle.digDown(); turtle.attackDown()
+                        digIfKelp(turtle.inspectDown, turtle.digDown); turtle.attackDown()
                     end
                 end
                 if not moved_down then
@@ -190,7 +203,7 @@ local function stepForward()
         if isTurtleBlock(turtle.inspect) then
             onBlocked()
         else
-            turtle.dig(); turtle.attack()
+            digIfKelp(turtle.inspect, turtle.dig); turtle.attack()
         end
     end
     if     pdir == 0 then pz = pz + 1
@@ -207,7 +220,7 @@ local function stepUp()
         if isTurtleBlock(turtle.inspectUp) then
             onBlocked()
         else
-            turtle.digUp(); turtle.attackUp()
+            digIfKelp(turtle.inspectUp, turtle.digUp); turtle.attackUp()
         end
     end
     py = py + 1
@@ -221,7 +234,7 @@ local function stepDown()
             if isTurtleBlock(turtle.inspectDown) then
                 onBlocked()
             else
-                turtle.digDown(); turtle.attackDown()
+                digIfKelp(turtle.inspectDown, turtle.digDown); turtle.attackDown()
             end
         end
     end
