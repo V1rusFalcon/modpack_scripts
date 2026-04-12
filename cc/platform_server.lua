@@ -144,11 +144,13 @@ local in_progress      = {}     -- [turtle_id] = col_x currently building
 local done_count       = 0
 local turtle_status    = {}     -- [turtle_id] = {fuel, pct, layer, idle}
 local last_seen        = {}     -- [turtle_id] = os.epoch("utc")/1000 of last message
-local HEARTBEAT_TIMEOUT = 30    -- seconds of silence before a turtle is considered dead
+local HEARTBEAT_TIMEOUT   = 30  -- seconds of silence before a turtle is considered dead
+local CHEST_GRANT_TIMEOUT = 45  -- seconds to reach the chest before grant is revoked
 
 -- Chest access queue: only one turtle may use the chest at a time.
-local chest_queue  = {}   -- ordered list of turtle IDs waiting for access
-local chest_in_use = nil  -- turtle ID currently at the chest, or nil
+local chest_queue      = {}   -- ordered list of turtle IDs waiting for access
+local chest_in_use     = nil  -- turtle ID currently at the chest, or nil
+local chest_grant_time = nil  -- os.epoch (seconds) when current CHEST_GRANT was sent
 
 if saved then
     -- Restore finished-column count and remaining queue.
@@ -204,7 +206,8 @@ persist()
 -- --------------------------------------------------------------------------
 local function tryGrantChest()
     if chest_in_use == nil and #chest_queue > 0 then
-        chest_in_use = table.remove(chest_queue, 1)
+        chest_in_use     = table.remove(chest_queue, 1)
+        chest_grant_time = os.epoch("utc") / 1000
         rednet.send(chest_in_use, {type = "CHEST_GRANT"}, SERVER_PROTOCOL)
         print(string.format("  Chest → turtle %d  (%d still waiting)", chest_in_use, #chest_queue))
     end
@@ -260,6 +263,30 @@ local function evictDeadTurtles()
         end
     end
     if #dead > 0 then persist() end
+end
+
+-- --------------------------------------------------------------------------
+-- Chest-grant timeout — if an alive turtle has held the chest grant for too
+-- long without sending CHEST_DONE, move it to the back of the queue so other
+-- turtles are not blocked.  Dead turtles are handled by evictDeadTurtles.
+-- --------------------------------------------------------------------------
+local function checkChestTimeout()
+    if chest_in_use == nil or chest_grant_time == nil then return end
+    local now = os.epoch("utc") / 1000
+    if now - chest_grant_time <= CHEST_GRANT_TIMEOUT then return end
+    -- Only revoke if the turtle is still alive; dead ones are handled by eviction.
+    local alive = last_seen[chest_in_use] ~= nil
+               and (now - last_seen[chest_in_use]) <= HEARTBEAT_TIMEOUT
+    if not alive then return end
+    local id = chest_in_use
+    print(string.format(
+        "  Turtle %d: chest grant timed out (%ds) — revoking, moving to end of queue.",
+        id, math.floor(now - chest_grant_time)))
+    rednet.send(id, {type = "CHEST_REVOKE"}, SERVER_PROTOCOL)
+    chest_queue[#chest_queue + 1] = id  -- re-queue at the end
+    chest_in_use     = nil
+    chest_grant_time = nil
+    tryGrantChest()
 end
 
 -- --------------------------------------------------------------------------
@@ -400,7 +427,8 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
 
         elseif msg.type == "CHEST_DONE" then
             if chest_in_use == sender then
-                chest_in_use = nil
+                chest_in_use     = nil
+                chest_grant_time = nil
                 print(string.format("  Turtle %d: chest done.", sender))
                 tryGrantChest()
             end
@@ -424,6 +452,39 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
             if turtle_status[sender] then
                 turtle_status[sender].fuel = msg.fuel or turtle_status[sender].fuel
             end
+
+        elseif msg.type == "RECONNECT" or msg.type == "RESET" then
+            -- Turtle (re)started; clear any stale state and let it re-request a task.
+            if in_progress[sender] ~= nil then
+                local col_x = in_progress[sender]
+                -- Re-queue the column only if it is not already in the queue
+                -- (could have been re-queued by eviction while the turtle was down).
+                local already = false
+                for _, cx in ipairs(work_queue) do
+                    if cx == col_x then already = true; break end
+                end
+                if not already then
+                    table.insert(work_queue, 1, col_x)
+                    print(string.format("  Turtle %d reconnected: re-queued col %d.", sender, col_x))
+                else
+                    print(string.format("  Turtle %d reconnected: col %d already queued.", sender, col_x))
+                end
+                in_progress[sender] = nil
+            else
+                print(string.format("  Turtle %d reconnected (no active col).", sender))
+            end
+            -- Release any chest hold so others are not blocked.
+            if chest_in_use == sender then
+                chest_in_use     = nil
+                chest_grant_time = nil
+                print(string.format("  Turtle %d reconnected: released chest.", sender))
+                tryGrantChest()
+            end
+            for i = #chest_queue, 1, -1 do
+                if chest_queue[i] == sender then table.remove(chest_queue, i) end
+            end
+            turtle_status[sender] = {fuel = 0, pct = 0, layer = nil, idle = false, blocked = false}
+            persist()
         end
 
         refreshMonitor()
@@ -431,8 +492,9 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
         -- Poll timeout (no message for 5 s) — also a good time to check.
         refreshMonitor()
     end
-    -- Always check for silent turtles, regardless of whether a message arrived.
+    -- Always check for silent turtles and stale chest grants.
     evictDeadTurtles()
+    checkChestTimeout()
 end
 
 -- --------------------------------------------------------------------------

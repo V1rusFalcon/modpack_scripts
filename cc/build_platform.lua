@@ -20,7 +20,10 @@ local FUEL_TARGET     = 10000  -- desired fuel level after resupply
 local MAT_THRESHOLD   = 16     -- go restock when fewer than this many blocks remain
 local STONE_TARGET    = 192    -- max cobblestone/stone to carry (3 stacks)
 local DIRT_TARGET     = 128    -- max dirt to carry (2 stacks)
-local HEARTBEAT_EVERY = 8      -- send HEARTBEAT to server every N turtle operations
+local HEARTBEAT_EVERY       = 8   -- send HEARTBEAT to server every N turtle operations
+local MAX_CONNECT_RETRIES   = 10  -- retry server lookup this many times before giving up
+local CONNECT_RETRY_SECS    = 5   -- seconds between server lookup retries
+local DEADLOCK_BREAK_AFTER  = 5   -- retries before attempting an up-and-over deadlock break
 
 -- --------------------------------------------------------------------------
 -- Monitor display (optional — attach a monitor to any side of the turtle)
@@ -33,6 +36,8 @@ end
 
 -- Global completion percentage (0-100); updated by sendStatus during building.
 local g_pct = 0
+-- Column currently being built (nil between tasks or before first task).
+local g_current_col_x = nil
 
 local function setStatus(state, task)
     -- Always print to the terminal as well so it shows in server logs.
@@ -52,7 +57,7 @@ local function setStatus(state, task)
 end
 
 -- --------------------------------------------------------------------------
--- Connect to server
+-- Connect to server (with retries)
 -- --------------------------------------------------------------------------
 setStatus("STARTUP", "Finding modem — need wireless to reach server")
 local modem = peripheral.find("modem")
@@ -60,20 +65,40 @@ if not modem then error("No modem found! Attach a wireless modem.") end
 rednet.open(peripheral.getName(modem))
 
 print("=== Platform Builder Client ===")
-print("Looking up server (" .. SERVER_HOSTNAME .. ")...")
-setStatus("STARTUP", "Looking up server — need task coordinator")
 
-local server_id = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
-if not server_id then
-    error("Server not found! Start platform_server first.")
+-- server_id is module-level so all closures (sendHeartbeat, resupply, …) see
+-- the latest value after a reconnect without needing to be redefined.
+local server_id
+
+local function connectToServer()
+    local attempts = 0
+    while true do
+        attempts = attempts + 1
+        setStatus("STARTUP", string.format("Looking up server (attempt %d/%d)",
+            attempts, MAX_CONNECT_RETRIES))
+        print(string.format("Looking up server (%s) — attempt %d/%d…",
+            SERVER_HOSTNAME, attempts, MAX_CONNECT_RETRIES))
+        local sid = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
+        if sid then
+            print("Server found (ID " .. sid .. ").")
+            return sid
+        end
+        if attempts >= MAX_CONNECT_RETRIES then
+            error("Server not found after " .. MAX_CONNECT_RETRIES
+                .. " attempts. Start platform_server first.")
+        end
+        print(string.format("  Not found, retrying in %d s…", CONNECT_RETRY_SECS))
+        os.sleep(CONNECT_RETRY_SECS)
+    end
 end
-print("Server found (ID " .. server_id .. ").")
 
--- Notify the server to clear any memorised state from a previous run of
--- this turtle (e.g. after a crash or manual reset).
-setStatus("STARTUP", "Resetting server state — clearing previous run")
-rednet.send(server_id, {type = "RESET"}, SERVER_PROTOCOL)
-print("Server state reset sent.")
+server_id = connectToServer()
+
+-- Tell the server this turtle has (re)started so it can clear stale state.
+-- col_x = nil means no active task (fresh start or between tasks).
+setStatus("STARTUP", "Initializing — reporting state to server")
+rednet.send(server_id, {type = "RECONNECT", col_x = nil}, SERVER_PROTOCOL)
+print("Reconnect message sent.")
 
 -- --------------------------------------------------------------------------
 -- Heartbeat
@@ -120,7 +145,8 @@ local MAX_TURTLE_RETRIES = 15  -- ~30 s of waiting before giving up
 local TURTLE_WAIT_SECS   = 2
 
 local function waitForTurtle(label)
-    local retries = 0
+    local retries        = 0
+    local deadlock_breaks = 0
     return function()
         retries = retries + 1
         if retries > MAX_TURTLE_RETRIES then
@@ -133,7 +159,33 @@ local function waitForTurtle(label)
             x    = px, y = py, z = pz,
             dir  = pdir,
         }, SERVER_PROTOCOL)
-        os.sleep(TURTLE_WAIT_SECS)
+        -- After DEADLOCK_BREAK_AFTER consecutive retries (up to 3 times total),
+        -- step up one block to yield the path so a face-to-face pair can resolve.
+        if retries % DEADLOCK_BREAK_AFTER == 0 and deadlock_breaks < 3 then
+            deadlock_breaks = deadlock_breaks + 1
+            print(string.format("  [nav] deadlock suspected (break #%d) — stepping up to yield path",
+                deadlock_breaks))
+            if turtle.up() then
+                py = py + 1
+                os.sleep(TURTLE_WAIT_SECS * 2)  -- give the other turtle time to move
+                -- Come back down.
+                local moved_down = false
+                for _ = 1, 5 do
+                    if turtle.down() then py = py - 1; moved_down = true; break end
+                    if isTurtleBlock(turtle.inspectDown) then
+                        os.sleep(TURTLE_WAIT_SECS)
+                    else
+                        turtle.digDown(); turtle.attackDown()
+                    end
+                end
+                if not moved_down then
+                    print("  [nav] could not descend after deadlock break — goTo will correct")
+                end
+            end
+            retries = 0  -- reset so we get another chance before the error threshold
+        else
+            os.sleep(TURTLE_WAIT_SECS)
+        end
     end
 end
 
@@ -339,13 +391,41 @@ local function resupply()
     rednet.send(server_id, {type = "CHEST_REQUEST"}, SERVER_PROTOCOL)
     print("  Waiting in chest queue…")
     setStatus("RESUPPLY", "Waiting in chest queue")
+    local timeout_count = 0
     while true do
         local s, m = rednet.receive(SERVER_PROTOCOL, 10)
         if s == nil then
-            -- Timeout: re-announce liveness so the server doesn't drop us.
-            rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
-        elseif s == server_id and type(m) == "table" and m.type == "CHEST_GRANT" then
-            break
+            timeout_count = timeout_count + 1
+            if timeout_count >= 3 then
+                -- Several timeouts — server may have dropped; try to reconnect.
+                setStatus("RECONNECT", "Chest wait — looking up server")
+                local new_sid = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
+                if new_sid then
+                    server_id = new_sid
+                    print("Reconnected during chest wait (ID " .. server_id .. ").")
+                    rednet.send(server_id, {
+                        type  = "RECONNECT",
+                        col_x = g_current_col_x,
+                    }, SERVER_PROTOCOL)
+                    rednet.send(server_id, {type = "CHEST_REQUEST"}, SERVER_PROTOCOL)
+                else
+                    print("  Server not found during chest wait, retrying…")
+                end
+                timeout_count = 0
+            else
+                -- Timeout: re-announce liveness so the server doesn't drop us.
+                rednet.send(server_id, {type = "HEARTBEAT", fuel = turtle.getFuelLevel()}, SERVER_PROTOCOL)
+            end
+        elseif s == server_id and type(m) == "table" then
+            if m.type == "CHEST_GRANT" then
+                break
+            elseif m.type == "CHEST_REVOKE" then
+                -- Server revoked our turn (took too long); will re-queue at end.
+                print("  Chest access revoked — will re-request from end of queue.")
+                setStatus("RESUPPLY", "Chest revoked — re-queuing")
+                timeout_count = 0
+                rednet.send(server_id, {type = "CHEST_REQUEST"}, SERVER_PROTOCOL)
+            end
         end
     end
     print("  Chest access granted.")
@@ -705,6 +785,41 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
 end
 
 -- --------------------------------------------------------------------------
+-- Receive the next server message, reconnecting automatically on timeout.
+-- Only returns once a valid message from server_id is received.
+-- --------------------------------------------------------------------------
+local function waitForServerMsg()
+    while true do
+        local sender, msg = rednet.receive(SERVER_PROTOCOL, 30)
+        if sender == nil then
+            -- No message for 30 s — check whether the server is still reachable.
+            setStatus("RECONNECT", "No server response — looking up server")
+            print("No message from server for 30 s, attempting reconnect…")
+            local new_sid = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
+            if new_sid then
+                server_id = new_sid
+                print("Reconnected (ID " .. server_id .. ").")
+                setStatus("RECONNECT", "Reconnected — reporting state")
+                rednet.send(server_id, {
+                    type  = "RECONNECT",
+                    col_x = g_current_col_x,
+                }, SERVER_PROTOCOL)
+                -- g_current_col_x may be nil (between tasks) or set (during
+                -- a resupply while building). Either way, report it to the server.
+                setStatus("IDLE", "Re-requesting task after reconnect")
+                rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
+            else
+                print("Server not found, will retry…")
+                setStatus("RECONNECT", "Server not found — retrying")
+            end
+        elseif sender == server_id and type(msg) == "table" then
+            return sender, msg
+        end
+        -- Ignore messages from unknown senders; loop back to receive.
+    end
+end
+
+-- --------------------------------------------------------------------------
 -- Main task loop — keep requesting columns until the server has no more
 -- --------------------------------------------------------------------------
 -- Initial startup: ensure fuel and at least a minimal stock before first task.
@@ -717,11 +832,7 @@ setStatus("IDLE", "Requesting first task")
 rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
 
 while true do
-    local sender, msg
-    repeat
-        sender, msg = rednet.receive(SERVER_PROTOCOL, 60)
-        if sender == nil then error("Timeout waiting for task from server.") end
-    until sender == server_id and type(msg) == "table"
+    local _, msg = waitForServerMsg()
 
     if msg.type == "NO_MORE_TASKS" then
         parkTurtle()
@@ -735,12 +846,14 @@ while true do
         local start_side = msg.start_side      or task_start_side
         local build_dir  = msg.build_dir        or "up"
         task_start_side  = start_side  -- remember for idle-parking
-        g_pct = 0  -- reset progress for the new column task
+        g_pct           = 0     -- reset progress for the new column task
+        g_current_col_x = col_x -- track for reconnect reporting
         print(string.format("Col %d: %d positions × %d layers (%s, %s).",
             col_x, length, #layer_mats, start_side, build_dir))
         setStatus("BUILDING", string.format("Col %d  %d pos × %d layers", col_x, length, #layer_mats))
         buildColumn(col_x, length, layer_mats, start_side, build_dir)
         print(string.format("Col %d done.", col_x))
+        g_current_col_x = nil   -- task finished; nothing in progress
         rednet.send(server_id, {type = "TASK_DONE", col_x = col_x}, SERVER_PROTOCOL)
         -- Drain inventory across columns: only resupply when material is actually low.
         if countBuildBlocks() < MAT_THRESHOLD then resupply() end
