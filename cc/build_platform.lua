@@ -148,17 +148,36 @@ end
 
 local TURTLE_WAIT_SECS   = 2
 
--- Dig the block in the given direction only if it is kelp; otherwise sleep
--- briefly and let the caller retry.  turtle.attack* calls are kept separately
--- to clear mobs without touching solid blocks.
-local function digIfKelp(inspectFn, digFn)
-    local ok, data = inspectFn()
-    if ok and type(data) == "table" and type(data.name) == "string"
-            and data.name:find("kelp", 1, true) then
-        digFn()
-    else
-        os.sleep(TURTLE_WAIT_SECS)
+-- --------------------------------------------------------------------------
+-- Material type helpers
+-- "stone" matches cobblestone, stone, granite, andesite, diorite, deepslate …
+-- "dirt"  matches dirt, grass_block, podzol, mud …
+-- --------------------------------------------------------------------------
+local STONE_PATTERNS = {"cobble", "stone", "granite", "diorite", "andesite", "deepslate", "blackstone", "smooth"}
+local DIRT_PATTERNS  = {"dirt", "grass", "podzol", "mycelium", "mud"}
+
+local function matchesMat(name, patterns)
+    for _, p in ipairs(patterns) do
+        if name:find(p, 1, true) then return true end
     end
+    return false
+end
+
+-- Dig the block in the given direction only if it is a breakable type
+-- (kelp, stone/cobblestone, dirt, or grass); otherwise sleep briefly and let
+-- the caller retry.  turtle.attack* calls are kept separately to clear mobs.
+local function digIfAllowed(inspectFn, digFn)
+    local ok, data = inspectFn()
+    if ok and type(data) == "table" and type(data.name) == "string" then
+        local nm = data.name
+        if nm:find("kelp", 1, true)
+                or matchesMat(nm, STONE_PATTERNS)
+                or matchesMat(nm, DIRT_PATTERNS) then
+            digFn()
+            return
+        end
+    end
+    os.sleep(TURTLE_WAIT_SECS)
 end
 
 -- inspectFn / digFn are the direction-specific inspect and dig functions for the
@@ -210,7 +229,7 @@ local function waitForTurtle(label, inspectFn, digFn)
                         if isTurtleBlock(turtle.inspectDown) then
                             os.sleep(TURTLE_WAIT_SECS)
                         else
-                            digIfKelp(turtle.inspectDown, turtle.digDown); turtle.attackDown()
+                            digIfAllowed(turtle.inspectDown, turtle.digDown); turtle.attackDown()
                         end
                     end
                     if not moved_down then
@@ -231,7 +250,7 @@ local function stepForward()
         if isTurtleBlock(turtle.inspect) then
             onBlocked()
         else
-            digIfKelp(turtle.inspect, turtle.dig); turtle.attack()
+            digIfAllowed(turtle.inspect, turtle.dig); turtle.attack()
         end
     end
     if     pdir == 0 then pz = pz + 1
@@ -248,7 +267,7 @@ local function stepUp()
         if isTurtleBlock(turtle.inspectUp) then
             onBlocked()
         else
-            digIfKelp(turtle.inspectUp, turtle.digUp); turtle.attackUp()
+            digIfAllowed(turtle.inspectUp, turtle.digUp); turtle.attackUp()
         end
     end
     py = py + 1
@@ -262,7 +281,7 @@ local function stepDown()
             if isTurtleBlock(turtle.inspectDown) then
                 onBlocked()
             else
-                digIfKelp(turtle.inspectDown, turtle.digDown); turtle.attackDown()
+                digIfAllowed(turtle.inspectDown, turtle.digDown); turtle.attackDown()
             end
         end
     end
@@ -296,21 +315,6 @@ local function goTo(tx, ty, tz)
             while pz ~= tz do stepForward() end
         end
     end
-end
-
--- --------------------------------------------------------------------------
--- Material type helpers
--- "stone" matches cobblestone, stone, granite, andesite, diorite, deepslate …
--- "dirt"  matches dirt, grass_block, podzol, mud …
--- --------------------------------------------------------------------------
-local STONE_PATTERNS = {"cobble", "stone", "granite", "diorite", "andesite", "deepslate", "blackstone", "smooth"}
-local DIRT_PATTERNS  = {"dirt", "grass", "podzol", "mycelium", "mud"}
-
-local function matchesMat(name, patterns)
-    for _, p in ipairs(patterns) do
-        if name:find(p, 1, true) then return true end
-    end
-    return false
 end
 
 -- Count non-bucket items of a given type ("stone", "dirt") or all if type is nil.
