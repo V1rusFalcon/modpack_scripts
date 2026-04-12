@@ -846,7 +846,21 @@ end
 -- --------------------------------------------------------------------------
 -- Main task loop — keep requesting columns until the server has no more
 -- --------------------------------------------------------------------------
--- Initial startup: ensure fuel and at least a minimal stock before first task.
+-- Initial startup: burn every combustible item already in the inventory
+-- (regardless of current fuel level), then top-up from the chest if still
+-- needed, and ensure we have enough building materials before the first task.
+setStatus("STARTUP", "Burning inventory fuel before first task")
+local _startup_fuel_limit = turtle.getFuelLimit()
+for slot = 1, 16 do
+    if turtle.getFuelLevel() >= _startup_fuel_limit then break end
+    turtle.select(slot)
+    if turtle.refuel(0) then
+        turtle.refuel(1)
+        setStatus("STARTUP", "Burned inv slot " .. slot .. " → fuel=" .. turtle.getFuelLevel())
+    end
+end
+turtle.select(1)
+print(string.format("[DBG] startup: burned inventory → fuel=%d", turtle.getFuelLevel()))
 setStatus("STARTUP", "Checking fuel — need >=" .. FUEL_THRESHOLD .. " to begin")
 checkFuel()
 setStatus("STARTUP", "Checking blocks — need >=" .. MAT_THRESHOLD .. " to begin")
