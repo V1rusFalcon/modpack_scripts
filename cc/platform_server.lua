@@ -218,19 +218,36 @@ end
 local function evictDeadTurtles()
     local now = os.epoch("utc") / 1000
     local dead = {}
-    for id, _ in pairs(in_progress) do
-        if last_seen[id] == nil or (now - last_seen[id]) > HEARTBEAT_TIMEOUT then
+    local dead_set = {}  -- deduplication across the three sources below
+
+    local function markDead(id)
+        if not dead_set[id] and
+                (last_seen[id] == nil or (now - last_seen[id]) > HEARTBEAT_TIMEOUT) then
             dead[#dead + 1] = id
+            dead_set[id] = true
         end
     end
+
+    -- Turtles with an active build column.
+    for id, _ in pairs(in_progress) do markDead(id) end
+
+    -- Turtles that are at or waiting for the chest but may have no active column
+    -- (e.g. between tasks or after finishing their last column).
+    if chest_in_use then markDead(chest_in_use) end
+    for _, id in ipairs(chest_queue) do markDead(id) end
+
     for _, id in ipairs(dead) do
-        local col_x = in_progress[id]
-        print(string.format("  Turtle %d timed out! Re-queuing col %d.", id, col_x))
-        table.insert(work_queue, 1, col_x)
-        in_progress[id] = nil
-        if turtle_status[id] then
-            turtle_status[id].pct  = 0
-            turtle_status[id].idle = false
+        if in_progress[id] ~= nil then
+            local col_x = in_progress[id]
+            print(string.format("  Turtle %d timed out! Re-queuing col %d.", id, col_x))
+            table.insert(work_queue, 1, col_x)
+            in_progress[id] = nil
+            if turtle_status[id] then
+                turtle_status[id].pct  = 0
+                turtle_status[id].idle = false
+            end
+        else
+            print(string.format("  Turtle %d timed out (no active col).", id))
         end
         -- Release the chest if this dead turtle was holding or waiting for it.
         if chest_in_use == id then
