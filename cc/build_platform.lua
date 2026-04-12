@@ -685,8 +685,32 @@ end
 
 -- Only check/top-up fuel; used during active building to avoid mid-column
 -- material trips to the chest.
+-- When fuel is low, burn every combustible item already in the inventory
+-- first (no target cap — use it all up), then always visit the chest to
+-- restock the spent fuel items and top-up building materials.
 local function checkFuel()
     if turtle.getFuelLevel() < FUEL_THRESHOLD then
+        -- Burn all combustible items currently in the inventory before heading
+        -- to the chest so we use what we already carry.  Stop early if the
+        -- turtle reaches its fuel limit so no items are wasted.
+        local fuel_limit = turtle.getFuelLimit()
+        local any_burned = false
+        for s = 1, 16 do
+            if turtle.getFuelLevel() >= fuel_limit then break end
+            turtle.select(s)
+            if turtle.refuel(0) then  -- dry-run: true only if combustible
+                -- Burn one item at a time to avoid overshooting the fuel limit.
+                turtle.refuel(1)
+                any_burned = true
+                setStatus("RESUPPLY", "Burned inv fuel → fuel=" .. turtle.getFuelLevel())
+            end
+        end
+        turtle.select(1)
+        if any_burned then
+            print(string.format("[DBG] checkFuel: burned inventory → fuel=%d", turtle.getFuelLevel()))
+        end
+        -- Always go to the chest afterwards to restock consumed fuel items
+        -- and top-up building materials.
         resupply()
     end
 end
