@@ -283,6 +283,8 @@ local function refreshMonitor()
         local label
         if age > HEARTBEAT_TIMEOUT then
             label = "DEAD"
+        elseif st.blocked then
+            label = "BLK"
         elseif st.idle then
             label = "idle"
         else
@@ -318,10 +320,15 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
     if sender and type(msg) == "table" then
         -- Any message counts as proof the turtle is alive.
         last_seen[sender] = os.epoch("utc") / 1000
+        -- Clear blocked flag whenever turtle is actively communicating (unless
+        -- this message IS the blocked notification).
+        if msg.type ~= "TURTLE_BLOCKED" and turtle_status[sender] then
+            turtle_status[sender].blocked = false
+        end
 
         if msg.type == "REQUEST_TASK" then
             if not turtle_status[sender] then
-                turtle_status[sender] = {fuel = 0, pct = 0, layer = nil, idle = false}
+                turtle_status[sender] = {fuel = 0, pct = 0, layer = nil, idle = false, blocked = false}
                 print("New turtle: " .. sender)
             end
             if #work_queue > 0 then
@@ -387,6 +394,13 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
                 turtle_status[sender].pct   = msg.pct   or 0
                 turtle_status[sender].layer = msg.layer or turtle_status[sender].layer
                 turtle_status[sender].idle  = false
+            end
+
+        elseif msg.type == "TURTLE_BLOCKED" then
+            print(string.format("  Turtle %d blocked by turtle at (%s,%s,%s) — waiting for it to move",
+                sender, tostring(msg.x), tostring(msg.y), tostring(msg.z)))
+            if turtle_status[sender] then
+                turtle_status[sender].blocked = true
             end
 
         elseif msg.type == "HEARTBEAT" then

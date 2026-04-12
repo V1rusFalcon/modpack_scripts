@@ -116,12 +116,35 @@ local function isTurtleBlock(inspectFn)
         and data.name:find("turtle", 1, true) ~= nil
 end
 
+local MAX_TURTLE_RETRIES = 15  -- ~30 s of waiting before giving up
+local TURTLE_WAIT_SECS   = 2
+
+local function waitForTurtle(label)
+    local retries = 0
+    return function()
+        retries = retries + 1
+        if retries > MAX_TURTLE_RETRIES then
+            error(label .. ": still blocked by a turtle after " .. MAX_TURTLE_RETRIES .. " retries — aborting")
+        end
+        print(string.format("  [nav] %s blocked by turtle at (%d,%d,%d) — waiting (attempt %d/%d)",
+            label, px, py, pz, retries, MAX_TURTLE_RETRIES))
+        rednet.send(server_id, {
+            type = "TURTLE_BLOCKED",
+            x    = px, y = py, z = pz,
+            dir  = pdir,
+        }, SERVER_PROTOCOL)
+        os.sleep(TURTLE_WAIT_SECS)
+    end
+end
+
 local function stepForward()
+    local onBlocked = waitForTurtle("stepForward")
     while not turtle.forward() do
         if isTurtleBlock(turtle.inspect) then
-            error("stepForward: blocked by a turtle — aborting to avoid destroying it")
+            onBlocked()
+        else
+            turtle.dig(); turtle.attack()
         end
-        turtle.dig(); turtle.attack()
     end
     if     pdir == 0 then pz = pz + 1
     elseif pdir == 1 then px = px + 1
@@ -132,11 +155,13 @@ local function stepForward()
 end
 
 local function stepUp()
+    local onBlocked = waitForTurtle("stepUp")
     while not turtle.up() do
         if isTurtleBlock(turtle.inspectUp) then
-            error("stepUp: blocked by a turtle — aborting to avoid destroying it")
+            onBlocked()
+        else
+            turtle.digUp(); turtle.attackUp()
         end
-        turtle.digUp(); turtle.attackUp()
     end
     py = py + 1
 end
@@ -144,11 +169,13 @@ end
 local function stepDown()
     if not turtle.down() then
         print(string.format("  [dbg] stepDown blocked at (%d,%d,%d) — digging", px, py, pz))
+        local onBlocked = waitForTurtle("stepDown")
         while not turtle.down() do
             if isTurtleBlock(turtle.inspectDown) then
-                error("stepDown: blocked by a turtle — aborting to avoid destroying it")
+                onBlocked()
+            else
+                turtle.digDown(); turtle.attackDown()
             end
-            turtle.digDown(); turtle.attackDown()
         end
     end
     py = py - 1
