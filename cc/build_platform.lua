@@ -40,6 +40,9 @@ local g_pct = 0
 local g_current_col_x = nil
 -- Set to true when an offline turtle is dug up and needs to be returned to chest.
 local g_offline_turtle_collected = false
+-- Start position of the row currently being built (set on entering a row, nil otherwise).
+-- Used by resupply() so the turtle backs out to the row start before heading to the chest.
+local g_row_start = nil
 
 local function setStatus(state, task)
     -- Always print to the terminal as well so it shows in server logs.
@@ -464,7 +467,13 @@ local function resupply()
     print("  Chest access granted.")
     setStatus("RESUPPLY", "Navigating to chest")
 
-    -- 2. Navigate to the chest.
+    -- 2. Navigate to the chest: first back out to the row start (if mid-row) so
+    --    the path to the chest follows the built corridor rather than cutting
+    --    diagonally through the work area.
+    if g_row_start then
+        setStatus("RESUPPLY", "Returning to row start before chest")
+        goTo(g_row_start.x, g_row_start.y, g_row_start.z)
+    end
     goTo(0, 0, 0)
     face(2)  -- face -z so the supply chest at (0, 0, -1) is directly in front
 
@@ -823,6 +832,8 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
         -- turtles travelling to/from the supply chest at (0,0,-1).
         goTo(gx, layerY(layer), 1)
         face(0)  -- face +z along length
+        -- Record the row-start so resupply() can back out here before heading to chest.
+        g_row_start = {x = gx, y = layerY(layer), z = 1}
 
         for z = 1, length do
             checkFuel()
@@ -838,6 +849,7 @@ local function buildColumn(col_x, length, layer_materials, start_side, build_dir
         end
 
         -- Return to column-start at this height before moving to next layer.
+        g_row_start = nil
         goTo(gx, layerY(layer), 0)
     end
 
