@@ -15,6 +15,7 @@
 
 local SERVER_PROTOCOL = "modpack_platform"
 local SERVER_HOSTNAME  = "platform_server"
+local STATE_FILE       = "platform_state.dat"
 
 -- --------------------------------------------------------------------------
 -- Prompt helper
@@ -44,6 +45,23 @@ local function readChoice(prompt, choices, default)
 end
 
 -- --------------------------------------------------------------------------
+-- State persistence — survives reboots / update events
+-- --------------------------------------------------------------------------
+local function saveState(data)
+    local f = fs.open(STATE_FILE, "w")
+    f.write(textutils.serialise(data))
+    f.close()
+end
+
+local function loadState()
+    if not fs.exists(STATE_FILE) then return nil end
+    local f = fs.open(STATE_FILE, "r")
+    local raw = f.readAll()
+    f.close()
+    return textutils.unserialise(raw)
+end
+
+-- --------------------------------------------------------------------------
 -- Peripherals
 -- --------------------------------------------------------------------------
 local modem = peripheral.find("modem")
@@ -60,23 +78,52 @@ if monitor then
 end
 
 -- --------------------------------------------------------------------------
--- Parameters
+-- Parameters — restore from saved state or prompt fresh
 -- --------------------------------------------------------------------------
 print("=== Platform Builder Server ===")
-print("Turtles face +z; chest is directly in front of them (+z).")
-print("Work area is to the LEFT or RIGHT of the turtles' start position.")
-print("")
-local WIDTH        = readNumber("Total width  (x, perpendicular to facing)",    10)
-local LENGTH       = readNumber("Length (z, along turtles' facing)",             10)
-local STONE_LAYERS = readNumber("Stone layers (bottom of platform)",              3)
-local DIRT_LAYERS  = readNumber("Dirt layers  (top of platform)",                 2)
-local LAYERS       = STONE_LAYERS + DIRT_LAYERS
-local START_SIDE   = readChoice("Work area side (left/right of turtle start)",  {"left","right"}, "left")
-local BUILD_DIR    = readChoice("Build direction (up=terrain, down=water/void)", {"up","down"},   "up")
 
-local layer_materials = {}
-for i = 1, STONE_LAYERS do layer_materials[i] = "stone" end
-for i = 1, DIRT_LAYERS  do layer_materials[STONE_LAYERS + i] = "dirt" end
+local WIDTH, LENGTH, STONE_LAYERS, DIRT_LAYERS, LAYERS
+local START_SIDE, BUILD_DIR, layer_materials
+
+local saved = loadState()
+if saved then
+    print(string.format(
+        "Saved state found: %dx%d, %d stone + %d dirt, side=%s, dir=%s.",
+        saved.WIDTH, saved.LENGTH, saved.STONE_LAYERS, saved.DIRT_LAYERS,
+        saved.START_SIDE, saved.BUILD_DIR))
+    print(string.format("Progress: %d/%d columns done.", saved.done_count, saved.WIDTH))
+    local ans = readChoice("Resume this job?", {"y", "n"}, "y")
+    if ans == "y" then
+        WIDTH           = saved.WIDTH
+        LENGTH          = saved.LENGTH
+        STONE_LAYERS    = saved.STONE_LAYERS
+        DIRT_LAYERS     = saved.DIRT_LAYERS
+        LAYERS          = saved.LAYERS
+        START_SIDE      = saved.START_SIDE
+        BUILD_DIR       = saved.BUILD_DIR
+        layer_materials = saved.layer_materials
+    else
+        fs.delete(STATE_FILE)
+        saved = nil
+    end
+end
+
+if not saved then
+    print("Turtles face +z; chest is directly in front of them (+z).")
+    print("Work area is to the LEFT or RIGHT of the turtles' start position.")
+    print("")
+    WIDTH        = readNumber("Total width  (x, perpendicular to facing)",    10)
+    LENGTH       = readNumber("Length (z, along turtles' facing)",             10)
+    STONE_LAYERS = readNumber("Stone layers (bottom of platform)",              3)
+    DIRT_LAYERS  = readNumber("Dirt layers  (top of platform)",                 2)
+    LAYERS       = STONE_LAYERS + DIRT_LAYERS
+    START_SIDE   = readChoice("Work area side (left/right of turtle start)",  {"left","right"}, "left")
+    BUILD_DIR    = readChoice("Build direction (up=terrain, down=water/void)", {"up","down"},   "up")
+
+    layer_materials = {}
+    for i = 1, STONE_LAYERS do layer_materials[i] = "stone" end
+    for i = 1, DIRT_LAYERS  do layer_materials[STONE_LAYERS + i] = "dirt" end
+end
 
 -- --------------------------------------------------------------------------
 -- Work queue: one entry per column (global x = 0 … WIDTH-1)
@@ -92,13 +139,47 @@ local HEARTBEAT_TIMEOUT = 30    -- seconds of silence before a turtle is conside
 local chest_queue  = {}   -- ordered list of turtle IDs waiting for access
 local chest_in_use = nil  -- turtle ID currently at the chest, or nil
 
-for x = 0, WIDTH - 1 do
-    work_queue[#work_queue + 1] = x
+if saved then
+    -- Restore finished-column count and remaining queue.
+    done_count = saved.done_count
+    work_queue = saved.work_queue
+    -- Re-queue any columns that were mid-flight when the server last stopped;
+    -- those turtles rebooted too and will REQUEST_TASK again from the top.
+    for _, col_x in pairs(saved.in_progress) do
+        table.insert(work_queue, 1, col_x)
+    end
+    print(string.format(
+        "Resumed: %d cols done, %d in queue (including %d re-queued).",
+        done_count, #work_queue, #saved.in_progress))
+else
+    for x = 0, WIDTH - 1 do
+        work_queue[#work_queue + 1] = x
+    end
 end
 
 print(string.format(
     "\nJob: %d × %d, %d stone + %d dirt layers (%d col tasks, %s, %s). Listening for turtles…",
     WIDTH, LENGTH, STONE_LAYERS, DIRT_LAYERS, WIDTH, START_SIDE, BUILD_DIR))
+
+-- Closure that captures all relevant variables and writes a snapshot.
+local function persist()
+    saveState({
+        WIDTH           = WIDTH,
+        LENGTH          = LENGTH,
+        STONE_LAYERS    = STONE_LAYERS,
+        DIRT_LAYERS     = DIRT_LAYERS,
+        LAYERS          = LAYERS,
+        START_SIDE      = START_SIDE,
+        BUILD_DIR       = BUILD_DIR,
+        layer_materials = layer_materials,
+        work_queue      = work_queue,
+        in_progress     = in_progress,
+        done_count      = done_count,
+    })
+end
+
+-- Write an initial snapshot so config is always on disk.
+persist()
 
 -- --------------------------------------------------------------------------
 -- Chest queue helper — grant access to the next waiting turtle if free.
@@ -143,6 +224,7 @@ local function evictDeadTurtles()
             if chest_queue[i] == id then table.remove(chest_queue, i) end
         end
     end
+    if #dead > 0 then persist() end
 end
 
 -- --------------------------------------------------------------------------
@@ -241,6 +323,7 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
                 }, SERVER_PROTOCOL)
                 print(string.format(
                     "  Turtle %d → col %d  (%d left)", sender, col_x, #work_queue))
+                persist()
             else
                 turtle_status[sender].idle = true
                 rednet.send(sender, {type = "NO_MORE_TASKS"}, SERVER_PROTOCOL)
@@ -258,6 +341,7 @@ while done_count < WIDTH or chest_in_use ~= nil or #chest_queue > 0 do
                 end
                 print(string.format(
                     "  Turtle %d done. (%d/%d)", sender, done_count, WIDTH))
+                persist()
             end
 
         elseif msg.type == "CHEST_REQUEST" then
@@ -306,6 +390,7 @@ end
 -- Finished
 -- --------------------------------------------------------------------------
 print("Platform complete!")
+fs.delete(STATE_FILE)   -- job done; remove saved state so next run starts fresh
 if monitor then
     monitor.clear()
     monitor.setCursorPos(1, 1)
