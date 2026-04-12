@@ -21,7 +21,6 @@ local MAT_THRESHOLD   = 16     -- go restock when fewer than this many blocks re
 local STONE_TARGET    = 192    -- max cobblestone/stone to carry (3 stacks)
 local DIRT_TARGET     = 128    -- max dirt to carry (2 stacks)
 local HEARTBEAT_EVERY       = 8   -- send HEARTBEAT to server every N turtle operations
-local MAX_CONNECT_RETRIES   = 10  -- retry server lookup this many times before giving up
 local CONNECT_RETRY_SECS    = 5   -- seconds between server lookup retries
 local DEADLOCK_BREAK_AFTER  = 5   -- retries before attempting an up-and-over deadlock break
 
@@ -61,7 +60,12 @@ end
 -- --------------------------------------------------------------------------
 setStatus("STARTUP", "Finding modem — need wireless to reach server")
 local modem = peripheral.find("modem")
-if not modem then error("No modem found! Attach a wireless modem.") end
+while not modem do
+    print("No modem found — attach a wireless modem and wait…")
+    setStatus("STARTUP", "Waiting for modem — attach a wireless modem")
+    os.sleep(5)
+    modem = peripheral.find("modem")
+end
 rednet.open(peripheral.getName(modem))
 
 print("=== Platform Builder Client ===")
@@ -74,18 +78,13 @@ local function connectToServer()
     local attempts = 0
     while true do
         attempts = attempts + 1
-        setStatus("STARTUP", string.format("Looking up server (attempt %d/%d)",
-            attempts, MAX_CONNECT_RETRIES))
-        print(string.format("Looking up server (%s) — attempt %d/%d…",
-            SERVER_HOSTNAME, attempts, MAX_CONNECT_RETRIES))
+        setStatus("STARTUP", string.format("Looking up server (attempt %d)", attempts))
+        print(string.format("Looking up server (%s) — attempt %d…",
+            SERVER_HOSTNAME, attempts))
         local sid = rednet.lookup(SERVER_PROTOCOL, SERVER_HOSTNAME)
         if sid then
             print("Server found (ID " .. sid .. ").")
             return sid
-        end
-        if attempts >= MAX_CONNECT_RETRIES then
-            error("Server not found after " .. MAX_CONNECT_RETRIES
-                .. " attempts. Start platform_server first.")
         end
         print(string.format("  Not found, retrying in %d s…", CONNECT_RETRY_SECS))
         os.sleep(CONNECT_RETRY_SECS)
@@ -141,7 +140,6 @@ local function isTurtleBlock(inspectFn)
         and data.name:find("turtle", 1, true) ~= nil
 end
 
-local MAX_TURTLE_RETRIES = 15  -- ~30 s of waiting before giving up
 local TURTLE_WAIT_SECS   = 2
 
 local function waitForTurtle(label)
@@ -149,11 +147,8 @@ local function waitForTurtle(label)
     local deadlock_breaks = 0
     return function()
         retries = retries + 1
-        if retries > MAX_TURTLE_RETRIES then
-            error(label .. ": still blocked by a turtle after " .. MAX_TURTLE_RETRIES .. " retries — aborting")
-        end
-        print(string.format("  [nav] %s blocked by turtle at (%d,%d,%d) — waiting (attempt %d/%d)",
-            label, px, py, pz, retries, MAX_TURTLE_RETRIES))
+        print(string.format("  [nav] %s blocked by turtle at (%d,%d,%d) — waiting (attempt %d)",
+            label, px, py, pz, retries))
         rednet.send(server_id, {
             type = "TURTLE_BLOCKED",
             x    = px, y = py, z = pz,
@@ -182,7 +177,7 @@ local function waitForTurtle(label)
                     print("  [nav] could not descend after deadlock break — goTo will correct")
                 end
             end
-            retries = 0  -- reset so we get another chance before the error threshold
+            retries = 0  -- reset so we keep trying without limit
         else
             os.sleep(TURTLE_WAIT_SECS)
         end
@@ -439,8 +434,11 @@ local function resupply()
     --    (works for chests of any size, not just 27 slots).
     local chest = peripheral.wrap("front")
     print("[DBG] peripheral.wrap('front') = " .. tostring(chest))
-    if not chest then
-        error("No chest peripheral found in front at (0,0,-1)!")
+    while not chest do
+        print("No chest found at (0,0,-1) — waiting for chest to be placed…")
+        setStatus("RESUPPLY", "Waiting for chest at (0,0,-1)")
+        os.sleep(5)
+        chest = peripheral.wrap("front")
     end
     local chest_size = chest.size()
     print("[DBG] chest.size() = " .. tostring(chest_size))
@@ -847,21 +845,20 @@ end
 -- Main task loop — keep requesting columns until the server has no more
 -- --------------------------------------------------------------------------
 -- Initial startup: burn every combustible item already in the inventory
--- (regardless of current fuel level), then top-up from the chest if still
--- needed, and ensure we have enough building materials before the first task.
+-- up to the fuel limit, then top-up from the chest if still needed,
+-- and ensure we have enough building materials before the first task.
 setStatus("STARTUP", "Burning inventory fuel before first task")
-local _startup_fuel_limit = turtle.getFuelLimit()
+local startup_fuel_limit = turtle.getFuelLimit()
 for slot = 1, 16 do
-    if turtle.getFuelLevel() >= _startup_fuel_limit then break end
+    if turtle.getFuelLevel() >= startup_fuel_limit then break end
     turtle.select(slot)
     if turtle.refuel(0) then
         turtle.refuel(1)
-        setStatus("STARTUP", "Burned inv slot " .. slot .. " → fuel=" .. turtle.getFuelLevel())
     end
 end
 turtle.select(1)
 print(string.format("[DBG] startup: burned inventory → fuel=%d", turtle.getFuelLevel()))
-setStatus("STARTUP", "Checking fuel — need >=" .. FUEL_THRESHOLD .. " to begin")
+setStatus("STARTUP", "Burned inventory fuel → fuel=" .. turtle.getFuelLevel())
 checkFuel()
 setStatus("STARTUP", "Checking blocks — need >=" .. MAT_THRESHOLD .. " to begin")
 if countBuildBlocks() < MAT_THRESHOLD then resupply() end
@@ -874,7 +871,21 @@ while true do
 
     if msg.type == "NO_MORE_TASKS" then
         parkTurtle()
-        break
+        -- No tasks right now — park and wait. Poll the server every 30 s so
+        -- the turtle picks up automatically if new tasks are added later.
+        print("No tasks available — waiting for new tasks from server…")
+        while true do
+            setStatus("PARKED", "Idle — waiting for new tasks")
+            os.sleep(30)
+            print("Polling server for new tasks…")
+            rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
+            local _, poll_msg = waitForServerMsg()
+            if poll_msg.type == "TASK_ASSIGN" then
+                msg = poll_msg
+                break
+            end
+            -- NO_MORE_TASKS again: keep waiting
+        end
     end
 
     if msg.type == "TASK_ASSIGN" then
@@ -899,5 +910,3 @@ while true do
         rednet.send(server_id, {type = "REQUEST_TASK"}, SERVER_PROTOCOL)
     end
 end
-
-print("Done!")
